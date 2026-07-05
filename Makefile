@@ -49,8 +49,15 @@ gen: ## go generate
 	go generate ./...
 
 .PHONY: build
-build: ## goreleaser build
-	go tool goreleaser build --clean --single-target --snapshot
+build: install compile
+
+.PHONY: compile
+compile:
+	goreleaser build --clean --snapshot
+	
+.PHONY: install
+install: ## install goreleaser 
+	go install github.com/goreleaser/goreleaser/v2@latest
 
 .PHONY: spell
 spell: ## misspell
