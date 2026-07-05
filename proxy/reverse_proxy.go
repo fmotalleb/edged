@@ -24,6 +24,11 @@ type ProxyRouter struct {
 	protocol     string
 	routes       []routeEntry
 	mu           sync.RWMutex
+
+	// baseCtx is the context the server/listener was started with. Every
+	// request handled by this router is tied to it, so that shutting down
+	// the server (cancelling baseCtx) cancels in-flight proxied requests too.
+	baseCtx context.Context
 }
 
 type routeEntry struct {
@@ -33,11 +38,14 @@ type routeEntry struct {
 }
 
 // NewProxyRouter builds a proxy router with dedicated reverse proxies for each route.
+// ctx is the server's lifetime context; it is used both for logging during setup
+// and as the parent context for every request the router later handles.
 func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes []config.RouteConfig) (*ProxyRouter, error) {
 	logger := log.FromContext(ctx)
 	r := &ProxyRouter{
 		listenerName: listenerName,
 		protocol:     protocol,
+		baseCtx:      ctx,
 	}
 
 	for i, rc := range routes {
@@ -89,10 +97,16 @@ func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes [
 			transport.Proxy = nil
 		}
 
-		proxyHandler := httputil.NewSingleHostReverseProxy(targetURL)
-		proxyHandler.Transport = transport
-		proxyHandler.ErrorHandler = r.createErrorHandler(rc)
-		proxyHandler.Rewrite = r.createDirector(targetURL, rc, proxyHandler.Director)
+		// NOTE: We intentionally build *httputil.ReverseProxy directly instead of
+		// using httputil.NewSingleHostReverseProxy, which sets the legacy Director
+		// field. ReverseProxy panics if both Director and Rewrite are set, and we
+		// need Rewrite so we can read pr.In and correctly mutate pr.Out (the
+		// request that's actually sent upstream).
+		proxyHandler := &httputil.ReverseProxy{
+			Transport:    transport,
+			Rewrite:      r.createDirector(targetURL, rc),
+			ErrorHandler: r.createErrorHandler(rc),
+		}
 
 		r.routes = append(r.routes, routeEntry{
 			config:  rc,
@@ -141,14 +155,38 @@ func (r *ProxyRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Tie this request's context to the server's lifetime context, so that
+	// shutting down the server cancels any requests still being proxied.
+	ctx, cancel := r.deriveContext(req.Context())
+	defer cancel()
+	req = req.WithContext(ctx)
+
 	// Apply request timeout if configured
 	if bestMatch.config.Timeout > 0 {
-		ctx, cancel := context.WithTimeout(req.Context(), bestMatch.config.Timeout)
-		defer cancel()
+		var timeoutCancel context.CancelFunc
+		ctx, timeoutCancel = context.WithTimeout(req.Context(), bestMatch.config.Timeout)
+		defer timeoutCancel()
 		req = req.WithContext(ctx)
 	}
 
 	bestMatch.handler.ServeHTTP(w, req)
+}
+
+// deriveContext returns a context that carries reqCtx's values/deadline but is
+// also cancelled if the router's baseCtx (the server's lifetime context) is
+// cancelled first - e.g. on graceful shutdown.
+func (r *ProxyRouter) deriveContext(reqCtx context.Context) (context.Context, context.CancelFunc) {
+	if r.baseCtx == nil {
+		return reqCtx, func() {}
+	}
+
+	ctx, cancel := context.WithCancel(reqCtx)
+	stop := context.AfterFunc(r.baseCtx, cancel)
+
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 // matchHost checks exact host matching and wildcard (*.example.com) matching.
@@ -168,18 +206,23 @@ func (r *ProxyRouter) matchHost(requestHost, routeHost string) bool {
 	return false
 }
 
-// createDirector wraps the default Director to inject custom headers and strip prefixes.
-func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig, defaultDirector func(*http.Request)) func(*httputil.ProxyRequest) {
+// createDirector returns a Rewrite function for ReverseProxy. It reads the
+// original request from pr.In and mutates the outbound clone pr.Out - pr.Out
+// is what actually gets sent upstream, so all header/path/host changes must
+// be applied there.
+func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig) func(*httputil.ProxyRequest) {
 	return func(pr *httputil.ProxyRequest) {
-		// SetURL is the Rewrite-era replacement for calling the legacy Director;
-		// it sets scheme/host/path/rawquery on pr.Out correctly.
+		// Equivalent of the legacy Director: sets scheme/host and joins the
+		// target's path with the incoming request's path onto pr.Out.URL.
 		pr.SetURL(target)
 
-		out := pr.Out // <-- mutate this, not pr.In
+		out := pr.Out
+		in := pr.In
 
+		// Set standard forwarding headers
 		out.Header.Set("X-Forwarded-Proto", r.protocol)
-		if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
-			if prior := pr.In.Header.Get("X-Forwarded-For"); prior != "" {
+		if clientIP, _, err := net.SplitHostPort(in.RemoteAddr); err == nil {
+			if prior := in.Header.Get("X-Forwarded-For"); prior != "" {
 				out.Header.Set("X-Forwarded-For", prior+", "+clientIP)
 			} else {
 				out.Header.Set("X-Forwarded-For", clientIP)
@@ -187,10 +230,12 @@ func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig, def
 			out.Header.Set("X-Real-IP", clientIP)
 		}
 
+		// Inject custom headers from configuration
 		for k, v := range rc.CustomHeaders {
 			out.Header.Set(k, v)
 		}
 
+		// Strip path prefix if requested
 		if rc.StripPrefix && rc.PathPrefix != "/" && rc.PathPrefix != "" {
 			out.URL.Path = strings.TrimPrefix(out.URL.Path, rc.PathPrefix)
 			if !strings.HasPrefix(out.URL.Path, "/") {
@@ -199,7 +244,8 @@ func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig, def
 			out.URL.RawPath = ""
 		}
 
-		out.Host = target.Host
+		// Preserve request host header or override
+		out.Host = in.Host
 	}
 }
 
