@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/fmotalleb/go-tools/log"
+	"go.uber.org/zap"
 
 	"github.com/fmotalleb/edged/internal/acme"
 	"github.com/fmotalleb/edged/internal/config"
@@ -31,7 +33,8 @@ func NewServer(cfg *config.Config, acmeMgr *acme.Manager) *Server {
 }
 
 // Start boots up all network listeners in separate goroutines.
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
+	logger := log.FromContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -39,7 +42,7 @@ func (s *Server) Start() error {
 		var handler http.Handler
 
 		if l.Protocol == "http" && l.RedirectToHTTPS {
-			log.Printf("[Listener: %s] Configured as HTTP -> HTTPS Redirector on %s", l.Name, l.Address)
+			logger.Info("Configuring HTTP -> HTTPS Redirector", zap.String("listener", l.Name), zap.String("address", l.Address))
 			handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 				host := req.Host
 				if idx := strings.Index(host, ":"); idx != -1 {
@@ -49,7 +52,7 @@ func (s *Server) Start() error {
 				http.Redirect(w, req, targetURL, http.StatusMovedPermanently)
 			})
 		} else {
-			router, err := NewProxyRouter(l.Name, l.Protocol, l.Routes)
+			router, err := NewProxyRouter(ctx, l.Name, l.Protocol, l.Routes)
 			if err != nil {
 				return fmt.Errorf("failed to create proxy router for listener '%s': %w", l.Name, err)
 			}
@@ -75,10 +78,16 @@ func (s *Server) Start() error {
 					if s.acmeMgr == nil {
 						return fmt.Errorf("listener '%s' requested ACME TLS but ACME manager is not initialized", l.Name)
 					}
-					log.Printf("[Listener: %s] Enabling Let's Encrypt ACME TLS on %s for domains: %v", l.Name, l.Address, l.TLS.Domains)
+					logger.Info("Enabling Let's Encrypt ACME TLS on HTTPS listener",
+						zap.String("listener", l.Name),
+						zap.String("address", l.Address),
+						zap.Strings("domains", l.TLS.Domains))
 					tlsConfig.GetCertificate = s.acmeMgr.GetCertificate
 				} else if l.TLS.CertFile != "" && l.TLS.KeyFile != "" {
-					log.Printf("[Listener: %s] Loading static TLS certificates from %s / %s", l.Name, l.TLS.CertFile, l.TLS.KeyFile)
+					logger.Info("Loading static TLS certificates on HTTPS listener",
+						zap.String("listener", l.Name),
+						zap.String("cert_file", l.TLS.CertFile),
+						zap.String("key_file", l.TLS.KeyFile))
 					cert, err := tls.LoadX509KeyPair(l.TLS.CertFile, l.TLS.KeyFile)
 					if err != nil {
 						return fmt.Errorf("failed to load static TLS certs for listener '%s': %w", l.Name, err)
@@ -90,17 +99,17 @@ func (s *Server) Start() error {
 
 			s.servers = append(s.servers, srv)
 			go func(name, addr string, s *http.Server) {
-				log.Printf("[Listener: %s] Starting HTTPS reverse proxy on %s", name, addr)
+				logger.Info("Starting HTTPS reverse proxy listener", zap.String("listener", name), zap.String("address", addr))
 				if err := s.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-					log.Fatalf("[Listener: %s] Fatal HTTPS server error: %v", name, err)
+					logger.Fatal("Fatal HTTPS server error", zap.String("listener", name), zap.Error(err))
 				}
 			}(l.Name, l.Address, srv)
 		} else {
 			s.servers = append(s.servers, srv)
 			go func(name, addr string, s *http.Server) {
-				log.Printf("[Listener: %s] Starting HTTP server on %s", name, addr)
+				logger.Info("Starting HTTP server listener", zap.String("listener", name), zap.String("address", addr))
 				if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					log.Fatalf("[Listener: %s] Fatal HTTP server error: %v", name, err)
+					logger.Fatal("Fatal HTTP server error", zap.String("listener", name), zap.Error(err))
 				}
 			}(l.Name, l.Address, srv)
 		}
@@ -111,10 +120,11 @@ func (s *Server) Start() error {
 
 // Stop gracefully shuts down all running HTTP/HTTPS listeners.
 func (s *Server) Stop(ctx context.Context) error {
+	logger := log.FromContext(ctx)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	log.Println("[Server] Initiating graceful shutdown of all listeners...")
+	logger.Info("Initiating graceful shutdown of all listeners...")
 	var wg sync.WaitGroup
 	var errs []string
 	var errMu sync.Mutex
@@ -135,7 +145,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	if len(errs) > 0 {
 		return fmt.Errorf("shutdown errors: %s", strings.Join(errs, "; "))
 	}
-	log.Println("[Server] All listeners stopped successfully.")
+	logger.Info("All listeners stopped successfully")
 	return nil
 }
 

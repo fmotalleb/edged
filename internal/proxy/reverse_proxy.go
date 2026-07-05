@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -13,7 +12,8 @@ import (
 	"time"
 
 	"github.com/fmotalleb/edged/internal/config"
-
+	"github.com/fmotalleb/go-tools/log"
+	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 )
 
@@ -32,7 +32,8 @@ type routeEntry struct {
 }
 
 // NewProxyRouter builds a proxy router with dedicated reverse proxies for each route.
-func NewProxyRouter(listenerName, protocol string, routes []config.RouteConfig) (*ProxyRouter, error) {
+func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes []config.RouteConfig) (*ProxyRouter, error) {
+	logger := log.FromContext(ctx)
 	r := &ProxyRouter{
 		listenerName: listenerName,
 		protocol:     protocol,
@@ -64,7 +65,12 @@ func NewProxyRouter(listenerName, protocol string, routes []config.RouteConfig) 
 			if err != nil {
 				return nil, fmt.Errorf("invalid upstream_socks5_proxy '%s' for route[%d]: %w", rc.UpstreamSOCKS5Proxy, i, err)
 			}
-			log.Printf("[%s] Route '%s%s' -> '%s' configured to use SOCKS5 upstream tunnel: %s", listenerName, rc.Host, rc.PathPrefix, rc.Upstream, rc.UpstreamSOCKS5Proxy)
+			logger.Info("Configuring route to use SOCKS5 upstream tunnel",
+				zap.String("listener", listenerName),
+				zap.String("host", rc.Host),
+				zap.String("path_prefix", rc.PathPrefix),
+				zap.String("upstream", rc.Upstream),
+				zap.String("socks5_proxy", rc.UpstreamSOCKS5Proxy))
 
 			dialer, err := proxy.FromURL(proxyURL, proxy.Direct)
 			if err != nil {
@@ -82,15 +88,15 @@ func NewProxyRouter(listenerName, protocol string, routes []config.RouteConfig) 
 			transport.Proxy = nil
 		}
 
-		proxy := httputil.NewSingleHostReverseProxy(targetURL)
-		proxy.Transport = transport
-		proxy.ErrorHandler = r.createErrorHandler(rc)
-		proxy.Director = r.createDirector(targetURL, rc, proxy.Director)
+		proxyHandler := httputil.NewSingleHostReverseProxy(targetURL)
+		proxyHandler.Transport = transport
+		proxyHandler.ErrorHandler = r.createErrorHandler(rc)
+		proxyHandler.Director = r.createDirector(targetURL, rc, proxyHandler.Director)
 
 		r.routes = append(r.routes, routeEntry{
 			config:  rc,
 			target:  targetURL,
-			handler: proxy,
+			handler: proxyHandler,
 		})
 	}
 
@@ -99,6 +105,7 @@ func NewProxyRouter(listenerName, protocol string, routes []config.RouteConfig) 
 
 // ServeHTTP handles incoming requests, matching host and path prefix to the best route.
 func (r *ProxyRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	logger := log.FromContext(req.Context())
 	host := req.Host
 	if idx := strings.Index(host, ":"); idx != -1 {
 		host = host[:idx]
@@ -125,7 +132,10 @@ func (r *ProxyRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	r.mu.RUnlock()
 
 	if bestMatch == nil {
-		log.Printf("[%s] 404 No route matched for Host: '%s', Path: '%s'", r.listenerName, host, path)
+		logger.Warn("404 No route matched for request",
+			zap.String("listener", r.listenerName),
+			zap.String("host", host),
+			zap.String("path", path))
 		http.Error(w, fmt.Sprintf("404 Not Found: No reverse proxy route configured for host '%s'", host), http.StatusNotFound)
 		return
 	}
@@ -195,7 +205,12 @@ func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig, def
 // createErrorHandler handles upstream connection failures and timeouts gracefully.
 func (r *ProxyRouter) createErrorHandler(rc config.RouteConfig) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, req *http.Request, err error) {
-		log.Printf("[%s] Proxy error forwarding to upstream '%s' (SOCKS5: '%s'): %v", r.listenerName, rc.Upstream, rc.UpstreamSOCKS5Proxy, err)
+		logger := log.FromContext(req.Context())
+		logger.Error("Proxy forwarding error to upstream",
+			zap.String("listener", r.listenerName),
+			zap.String("upstream", rc.Upstream),
+			zap.String("socks5_proxy", rc.UpstreamSOCKS5Proxy),
+			zap.Error(err))
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadGateway)
 		fmt.Fprintf(w, `{"error": "502 Bad Gateway", "message": "Failed to reach upstream service", "upstream": "%s", "socks5_proxy": "%s"}`, rc.Upstream, rc.UpstreamSOCKS5Proxy)

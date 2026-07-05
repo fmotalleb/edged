@@ -11,7 +11,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -21,7 +20,7 @@ import (
 	"time"
 
 	"github.com/fmotalleb/edged/internal/config"
-
+	"github.com/fmotalleb/go-tools/log"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge/dns01"
@@ -29,6 +28,7 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/arvancloud"
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
 	"github.com/go-acme/lego/v4/registration"
+	"go.uber.org/zap"
 )
 
 // Manager handles automatic TLS certificate acquisition, renewal, and serving via Lego and Let's Encrypt.
@@ -39,22 +39,23 @@ type Manager struct {
 	certs     map[string]*tls.Certificate // Map from domain name / wildcard pattern to TLS cert
 	certMeta  map[string]time.Time        // Map from domain name to expiration time
 	mu        sync.RWMutex
-	obtainMu  sync.Mutex // Mutex to prevent duplicate concurrent obtain requests
+	obtainMu  sync.Mutex                  // Mutex to prevent duplicate concurrent obtain requests
 	transport *http.Transport
 }
 
 // NewManager initializes the ACME manager, configuring SOCKS5 proxy and DNS challenge providers.
-func NewManager(cfg config.ACMEConfig) (*Manager, error) {
+func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
+	logger := log.FromContext(ctx)
 	m := &Manager{
 		cfg:      cfg,
 		certs:    make(map[string]*tls.Certificate),
 		certMeta: make(map[string]time.Time),
 	}
 
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "accounts"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "accounts"), 0700); err != nil {
 		return nil, fmt.Errorf("failed to create storage dir: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "certs"), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "certs"), 0700); err != nil {
 		return nil, fmt.Errorf("failed to create certs dir: %w", err)
 	}
 
@@ -64,7 +65,7 @@ func NewManager(cfg config.ACMEConfig) (*Manager, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid socks5_proxy URL '%s': %w", cfg.SOCKS5Proxy, err)
 		}
-		log.Printf("[ACME] Configuring Let's Encrypt HTTP client to use SOCKS5 proxy: %s", cfg.SOCKS5Proxy)
+		logger.Info("Configuring Let's Encrypt HTTP client to use SOCKS5 proxy", zap.String("proxy", cfg.SOCKS5Proxy))
 		m.transport = &http.Transport{
 			Proxy: http.ProxyURL(proxyURL),
 			TLSClientConfig: &tls.Config{
@@ -117,7 +118,7 @@ func NewManager(cfg config.ACMEConfig) (*Manager, error) {
 	switch providerName {
 	case "arvancloud":
 		if cfg.DNSProvider.ArvanCloud.APIKey != "" {
-			log.Printf("[ACME] Configuring ArvanCloud DNS-01 challenge provider...")
+			logger.Info("Configuring ArvanCloud DNS-01 challenge provider...")
 			arvConfig := arvancloud.NewDefaultConfig()
 			arvConfig.APIKey = cfg.DNSProvider.ArvanCloud.APIKey
 			if cfg.DNSProvider.ArvanCloud.PropagationTimeout > 0 {
@@ -130,7 +131,7 @@ func NewManager(cfg config.ACMEConfig) (*Manager, error) {
 				arvConfig.TTL = cfg.DNSProvider.ArvanCloud.TTL
 			}
 			if cfg.DNSProvider.UseSOCKS5 && m.transport != nil {
-				log.Printf("[ACME] Routing ArvanCloud DNS API requests via SOCKS5 proxy")
+				logger.Info("Routing ArvanCloud DNS API requests via SOCKS5 proxy")
 				arvConfig.HTTPClient = &http.Client{
 					Transport: m.transport,
 					Timeout:   30 * time.Second,
@@ -150,7 +151,7 @@ func NewManager(cfg config.ACMEConfig) (*Manager, error) {
 			}
 		}
 	case "cloudflare":
-		log.Printf("[ACME] Configuring Cloudflare DNS-01 challenge provider...")
+		logger.Info("Configuring Cloudflare DNS-01 challenge provider...")
 		cfConfig := cloudflare.NewDefaultConfig()
 		if cfg.DNSProvider.Cloudflare.APIToken != "" {
 			cfConfig.AuthToken = cfg.DNSProvider.Cloudflare.APIToken
@@ -169,7 +170,7 @@ func NewManager(cfg config.ACMEConfig) (*Manager, error) {
 			cfConfig.TTL = cfg.DNSProvider.Cloudflare.TTL
 		}
 		if cfg.DNSProvider.UseSOCKS5 && m.transport != nil {
-			log.Printf("[ACME] Routing Cloudflare DNS API requests via SOCKS5 proxy")
+			logger.Info("Routing Cloudflare DNS API requests via SOCKS5 proxy")
 			cfConfig.HTTPClient = &http.Client{
 				Transport: m.transport,
 				Timeout:   30 * time.Second,
@@ -191,21 +192,21 @@ func NewManager(cfg config.ACMEConfig) (*Manager, error) {
 
 	// 6. Register ACME Account if not registered yet
 	if user.Registration == nil {
-		log.Printf("[ACME] Registering new ACME account with email: %s", cfg.Email)
+		logger.Info("Registering new ACME account", zap.String("email", cfg.Email))
 		reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 		if err != nil {
 			return nil, fmt.Errorf("failed to register ACME account: %w", err)
 		}
 		user.Registration = reg
 		if err := saveUser(userPath, user); err != nil {
-			log.Printf("[ACME] Warning: failed to save account registration: %v", err)
+			logger.Warn("Failed to save account registration to disk", zap.Error(err))
 		}
-		log.Printf("[ACME] Account registered successfully! URI: %s", reg.URI)
+		logger.Info("ACME Account registered successfully", zap.String("uri", reg.URI))
 	}
 
 	// 7. Load existing certificates from disk into memory
-	if err := m.loadCertificatesFromDisk(); err != nil {
-		log.Printf("[ACME] Warning during loading certificates from disk: %v", err)
+	if err := m.loadCertificatesFromDisk(ctx); err != nil {
+		logger.Warn("Warning during loading certificates from disk", zap.Error(err))
 	}
 
 	return m, nil
@@ -215,7 +216,6 @@ func NewManager(cfg config.ACMEConfig) (*Manager, error) {
 func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	serverName := strings.ToLower(strings.TrimSpace(hello.ServerName))
 	if serverName == "" {
-		// Fallback to any loaded certificate if SNI is omitted
 		m.mu.RLock()
 		for _, cert := range m.certs {
 			m.mu.RUnlock()
@@ -226,13 +226,11 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 	}
 
 	m.mu.RLock()
-	// 1. Check exact domain match (e.g., example.com or app.example.com)
 	if cert, ok := m.certs[serverName]; ok {
 		m.mu.RUnlock()
 		return cert, nil
 	}
 
-	// 2. Check wildcard match (e.g., *.example.com for app.example.com)
 	parts := strings.Split(serverName, ".")
 	if len(parts) >= 2 {
 		wildcardName := "*." + strings.Join(parts[1:], ".")
@@ -247,11 +245,12 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 }
 
 // EnsureDomains checks that all specified domains have valid certificates, obtaining them if needed.
-func (m *Manager) EnsureDomains(domains []string) error {
+func (m *Manager) EnsureDomains(ctx context.Context, domains []string) error {
 	if len(domains) == 0 {
 		return nil
 	}
 
+	logger := log.FromContext(ctx)
 	var missingOrExpiring []string
 	m.mu.RLock()
 	for _, domain := range domains {
@@ -263,7 +262,10 @@ func (m *Manager) EnsureDomains(domains []string) error {
 		}
 		daysLeft := time.Until(exp).Hours() / 24.0
 		if daysLeft < float64(m.cfg.RenewBeforeDays) {
-			log.Printf("[ACME] Certificate for %s expires in %.1f days (threshold: %d days). Marking for renewal.", domain, daysLeft, m.cfg.RenewBeforeDays)
+			logger.Info("Certificate is nearing expiration, marking for renewal",
+				zap.String("domain", domain),
+				zap.Float64("days_left", daysLeft),
+				zap.Int("threshold_days", m.cfg.RenewBeforeDays))
 			missingOrExpiring = append(missingOrExpiring, domain)
 		}
 	}
@@ -273,13 +275,15 @@ func (m *Manager) EnsureDomains(domains []string) error {
 		return nil
 	}
 
-	return m.obtainCertificate(domains)
+	return m.obtainCertificate(ctx, domains)
 }
 
 // obtainCertificate requests a new or renewed certificate from Let's Encrypt for the domain bundle.
-func (m *Manager) obtainCertificate(domains []string) error {
+func (m *Manager) obtainCertificate(ctx context.Context, domains []string) error {
 	m.obtainMu.Lock()
 	defer m.obtainMu.Unlock()
+
+	logger := log.FromContext(ctx)
 
 	needsObtain := false
 	m.mu.RLock()
@@ -297,7 +301,7 @@ func (m *Manager) obtainCertificate(domains []string) error {
 		return nil
 	}
 
-	log.Printf("[ACME] Requesting certificate via Let's Encrypt for domains: %v", domains)
+	logger.Info("Requesting certificate via Let's Encrypt", zap.Strings("domains", domains))
 	request := certificate.ObtainRequest{
 		Domains: domains,
 		Bundle:  true,
@@ -308,16 +312,16 @@ func (m *Manager) obtainCertificate(domains []string) error {
 		return fmt.Errorf("failed to obtain certificate for %v: %w", domains, err)
 	}
 
-	log.Printf("[ACME] Successfully obtained certificate for domains: %v", domains)
+	logger.Info("Successfully obtained certificate bundle", zap.Strings("domains", domains))
 
 	primaryDomain := strings.ReplaceAll(strings.ToLower(domains[0]), "*", "_wildcard")
 	certPath := filepath.Join(m.cfg.StoragePath, "certs", primaryDomain+".crt")
 	keyPath := filepath.Join(m.cfg.StoragePath, "certs", primaryDomain+".key")
 
-	if err := os.WriteFile(certPath, certificates.Certificate, 0o600); err != nil {
+	if err := os.WriteFile(certPath, certificates.Certificate, 0600); err != nil {
 		return fmt.Errorf("failed to save cert to disk: %w", err)
 	}
-	if err := os.WriteFile(keyPath, certificates.PrivateKey, 0o600); err != nil {
+	if err := os.WriteFile(keyPath, certificates.PrivateKey, 0600); err != nil {
 		return fmt.Errorf("failed to save key to disk: %w", err)
 	}
 
@@ -355,6 +359,7 @@ func (m *Manager) StartRenewalDaemon(ctx context.Context, domains []string) {
 		interval = 24 * time.Hour
 	}
 
+	logger := log.FromContext(ctx)
 	ticker := time.NewTicker(interval)
 	go func() {
 		for {
@@ -363,9 +368,9 @@ func (m *Manager) StartRenewalDaemon(ctx context.Context, domains []string) {
 				ticker.Stop()
 				return
 			case <-ticker.C:
-				log.Printf("[ACME] Running scheduled certificate renewal check for: %v", domains)
-				if err := m.EnsureDomains(domains); err != nil {
-					log.Printf("[ACME] Error during certificate renewal check: %v", err)
+				logger.Info("Running scheduled certificate renewal check", zap.Strings("domains", domains))
+				if err := m.EnsureDomains(ctx, domains); err != nil {
+					logger.Error("Error during scheduled certificate renewal check", zap.Error(err))
 				}
 			}
 		}
@@ -373,7 +378,8 @@ func (m *Manager) StartRenewalDaemon(ctx context.Context, domains []string) {
 }
 
 // loadCertificatesFromDisk scans the certs directory and loads existing certs into memory.
-func (m *Manager) loadCertificatesFromDisk() error {
+func (m *Manager) loadCertificatesFromDisk(ctx context.Context) error {
+	logger := log.FromContext(ctx)
 	certDir := filepath.Join(m.cfg.StoragePath, "certs")
 	files, err := os.ReadDir(certDir)
 	if err != nil {
@@ -397,7 +403,7 @@ func (m *Manager) loadCertificatesFromDisk() error {
 
 		tlsCert, err := tls.LoadX509KeyPair(certPath, keyPath)
 		if err != nil {
-			log.Printf("[ACME] Warning: failed to load cert/key %s: %v", baseName, err)
+			logger.Warn("Failed to load X509 key pair from disk", zap.String("base_name", baseName), zap.Error(err))
 			continue
 		}
 
@@ -421,7 +427,7 @@ func (m *Manager) loadCertificatesFromDisk() error {
 			dLower := strings.ToLower(strings.TrimSpace(d))
 			m.certs[dLower] = &tlsCert
 			m.certMeta[dLower] = expTime
-			log.Printf("[ACME] Loaded certificate from disk for domain: %s (expires: %s)", dLower, expTime.Format("2006-01-02"))
+			logger.Info("Loaded certificate from disk", zap.String("domain", dLower), zap.Time("expires", expTime))
 		}
 		m.mu.Unlock()
 	}
@@ -455,12 +461,12 @@ func loadOrCreatePrivateKey(path string) (crypto.PrivateKey, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
 
 	pemBlock := &pem.Block{Type: "EC PRIVATE KEY", Bytes: der}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,6 @@
-# Golang Reverse Proxy with ACME TLS & DNS-01 Wildcard Support
+# edged - Golang Reverse Proxy with ACME TLS & DNS-01 Wildcard Support
 
-A production-grade, high-performance Golang web server designed specifically to **always act as a reverse proxy**. It features automated TLS certificate acquisition and renewal via **Let's Encrypt (ACME v2)**, comprehensive **SOCKS5 proxy tunneling** across all layers (Let's Encrypt API, DNS challenge APIs, and upstream backends), and first-class integration with **ArvanCloud CDN** and **Cloudflare** for generating **wildcard certificates (`*.example.com`)** via the DNS-01 challenge.
+`edged` (`github.com/fmotalleb/edged`) is a production-grade, high-performance Golang web server designed specifically to **always act as a reverse proxy**. Built with **Cobra CLI**, structured **zap logging from context** (`github.com/fmotalleb/go-tools/log`), and robust **mapstructure configuration parsing** (`github.com/fmotalleb/go-tools/config`), it delivers automated Let's Encrypt TLS certificate management, hierarchical SOCKS5 tunneling across all layers, and automated wildcard certificate generation (`*.example.com`) via Cloudflare and ArvanCloud DNS-01 challenges.
 
 ---
 
@@ -29,17 +29,42 @@ A production-grade, high-performance Golang web server designed specifically to 
    - **ArvanCloud CDN DNS**: Integrated with ArvanCloud API (`ARVANCLOUD_API_KEY`) for seamless TXT record creation and cleanup.
    - Automatically generates wildcard certificates (`*.example.com`) without manual intervention.
 
+5. **Modern Go Tools Integration (`fmotalleb/go-tools`) & Cobra CLI**:
+   - **Cobra CLI**: Powerful command-line interface with persistent flags and subcommands (`edged run`, `edged validate`).
+   - **Context-Scoped Zap Logging**: Uses `github.com/fmotalleb/go-tools/log` to retrieve structured `*zap.Logger` instances directly from `context.Context`.
+   - **Strict Mapstructure Parsing**: Uses `github.com/fmotalleb/go-tools/config` with comprehensive `mapstructure:"..."` struct tags to ensure type-safe configuration decoding.
+
+---
+
+## 📁 Project Structure
+
+```text
+.
+├── cmd/
+│   └── edged/
+│       └── main.go              # Cobra CLI entrypoint, commands, signal handling
+├── internal/
+│   ├── acme/
+│   │   ├── manager.go           # ACME client, SOCKS5 proxy setup, DNS-01 providers, cert caching
+│   │   └── user.go              # Registration account user implementation for Lego
+│   ├── config/
+│   │   └── config.go            # Mapstructure config loader, defaults, validation
+│   └── proxy/
+│       ├── listener.go          # HTTP/HTTPS listener manager, TLS GetCertificate binding
+│       └── reverse_proxy.go     # ReverseProxy routing engine, custom director, error handling
+├── config.yaml                  # Example production YAML configuration
+├── Dockerfile                   # Multi-stage optimized build for Docker deployment
+├── Makefile                     # Build, run, and validation automation
+├── go.mod                       # Go module definition (github.com/fmotalleb/edged)
+└── README.md                    # Project documentation
+```
+
 ---
 
 ## ⚙️ Configuration Structure (`config.yaml`)
 
-The configuration file is structured cleanly around network **`listeners:`** and global **`acme:`** settings.
-
-### Example Configuration
-
 ```yaml
 # Global default SOCKS5 proxy for connecting to upstream backends.
-# Can be overridden per listener or per individual route.
 default_upstream_socks5_proxy: "" # e.g., "socks5://127.0.0.1:1080"
 
 listeners:
@@ -57,7 +82,6 @@ listeners:
   - name: "https-listener"
     address: "0.0.0.0:443"
     protocol: "https"
-    # Optional listener-level SOCKS5 proxy for all routes under this listener
     upstream_socks5_proxy: ""
     tls:
       enabled: true
@@ -68,64 +92,49 @@ listeners:
         - "cdn.example.org"
         - "*.cdn.example.org"
     routes:
-      # Route 1: Exact host matching to main application
       - host: "example.com"
         path_prefix: "/"
         upstream: "http://127.0.0.1:8080"
         strip_prefix: false
         timeout: 30s
         custom_headers:
-          X-Proxy-Engine: "Go-Advanced-Proxy"
+          X-Proxy-Engine: "edged"
 
-      # Route 2: API endpoint with path stripping
       - host: "api.example.com"
         path_prefix: "/v1"
         upstream: "http://127.0.0.1:3000"
         strip_prefix: false
 
-      # Route 3: Wildcard subdomain routing via SOCKS5 Upstream Proxy
+      # Wildcard subdomain routing via SOCKS5 Upstream Proxy
       - host: "*.example.com"
         path_prefix: "/"
         upstream: "http://10.0.0.10:8081"
-        # Route-level SOCKS5 tunnel: establishes TCP connection to 10.0.0.10:8081 via SOCKS5
         upstream_socks5_proxy: "socks5://user:pass@127.0.0.1:1080"
 
 # Global ACME Let's Encrypt Configuration
 acme:
   email: "admin@example.com"
   directory_url: "https://acme-v02.api.letsencrypt.org/directory"
-  
-  # Route Let's Encrypt requests through SOCKS5 proxy (leave empty for direct connection)
   socks5_proxy: "socks5://127.0.0.1:1080"
-  
   storage_path: "./acme_storage"
   renew_before_days: 30
   check_interval_hours: 24
 
-  # DNS-01 Challenge Provider Configuration for Wildcard Certificates
   dns_provider:
-    # Supported providers: "arvancloud" or "cloudflare"
-    name: "cloudflare"       # Switch between providers easily
-    use_socks5: true         # Also route DNS API requests via socks5_proxy
+    name: "cloudflare"       # Switch between "cloudflare" and "arvancloud"
+    use_socks5: true
 
-    # 1. ArvanCloud Configuration
     arvancloud:
-      api_key: "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # Or ARVANCLOUD_API_KEY env var
+      api_key: "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
       propagation_timeout: 120
       polling_interval: 2
       ttl: 600
 
-    # 2. Cloudflare Configuration
     cloudflare:
-      # Recommended: Scoped API Token with Zone:Read and DNS:Edit permissions
-      # Can also be provided via CLOUDFLARE_DNS_API_TOKEN environment variable
       api_token: "your_cloudflare_dns_api_token_here"
-      zone_token: ""           # Optional if permissions are split across tokens
-      
-      # Legacy Authentication (Use ONLY if api_token above is empty)
-      auth_email: ""           # Or CLOUDFLARE_EMAIL env var
-      auth_key: ""             # Or CLOUDFLARE_API_KEY env var
-
+      zone_token: ""
+      auth_email: ""
+      auth_key: ""
       propagation_timeout: 120
       polling_interval: 2
       ttl: 300
@@ -133,76 +142,54 @@ acme:
 
 ---
 
-## 🔐 How SOCKS5 Reverse Proxy Tunneling Works
-
-When `upstream_socks5_proxy` is specified on a route, listener, or globally:
-1. The proxy engine parses the URL (`socks5://user:password@host:port`) and creates an explicit SOCKS5 socket dialer via `golang.org/x/net/proxy`.
-2. The reverse proxy's custom `http.Transport` overrides its `DialContext` with the SOCKS5 dialer and disables standard HTTP proxy headers (`transport.Proxy = nil`).
-3. When an incoming request (HTTP/1.1, HTTP/2, or WebSocket upgrade) matches the route, Go connects directly to your SOCKS5 server, authenticates, and requests a TCP stream to your target upstream address (`http://10.0.0.10:8081`).
-4. Traffic flows seamlessly through the encrypted/tunneled SOCKS5 connection.
-
----
-
-## 🔐 How Wildcard Certificate Generation Works
-
-To issue a wildcard certificate (`*.example.com`), Let's Encrypt requires domain verification via the **DNS-01 challenge**.
-
-1. **Challenge Initialization**: When requesting a certificate for `*.example.com`, Let's Encrypt issues a DNS challenge token.
-2. **TXT Record Creation**: The server uses either the Cloudflare API (`https://api.cloudflare.com/client/v4/zones/.../dns_records`) or ArvanCloud API (`https://napi.arvancloud.ir/...`) to create a DNS TXT record at `_acme-challenge.example.com`.
-3. **SOCKS5 Proxy Routing**: If `acme.dns_provider.use_socks5` is enabled, all DNS provider API calls are tunneled through `acme.socks5_proxy`.
-4. **Propagation Verification**: The server queries public recursive DNS resolvers (`8.8.8.8:53` and `1.1.1.1:53`) every `polling_interval` seconds until the TXT record propagates globally.
-5. **Challenge Finalization**: Once verified, Let's Encrypt issues the TLS certificate bundle. The server downloads the certificates over SOCKS5, persists them to `./acme_storage/certs/`, loads them into active memory, and cleans up the DNS TXT record.
-
----
-
-## 🚀 Building & Running
+## 🚀 Building & Running with Cobra CLI
 
 ### 1. Local Development (Using Go / Makefile)
 
 ```bash
-# Tidy modules and download dependencies
+# Download dependencies
 make tidy
 
-# Build the executable
+# Build the executable binary
 make build
 
-# Validate your configuration YAML
+# Validate your configuration YAML using Cobra subcommand
+./edged validate --config config.yaml
+# OR:
 make validate
 
 # Run the reverse proxy
+./edged --config config.yaml
+# OR:
 make run
 ```
 
-### 2. Running with Docker
+### 2. Cobra CLI Usage
 
-Build the Docker image:
-```bash
-make docker-build
-```
+`edged` provides clean command-line flags and subcommands:
+```text
+Usage:
+  edged [command] [flags]
 
-Run the container (example with Cloudflare API Token):
-```bash
-docker run -d \
-  --name edged \
-  --restart unless-stopped \
-  -p 80:80 \
-  -p 443:443 \
-  -v $(pwd)/config.yaml:/app/config.yaml:ro \
-  -v $(pwd)/acme_storage:/app/acme_storage \
-  -e CLOUDFLARE_DNS_API_TOKEN="your_cloudflare_token_here" \
-  arvan-acme-proxy:latest
+Available Commands:
+  completion  Generate the autocompletion script for the specified shell
+  help        Help about any command
+  validate    Validate configuration file syntax and structure, then exit
+
+Flags:
+  -c, --config string   Path to YAML configuration file (default "config.yaml")
+  -h, --help            help for edged
+  -v, --validate        Validate configuration file and exit
 ```
 
 ---
 
 ## 🛠️ Environment Variable Overrides
 
-You can keep sensitive API tokens out of your YAML file by setting these environment variables:
-
 | Environment Variable | Provider | Description |
 | :--- | :--- | :--- |
 | `ARVANCLOUD_API_KEY` | ArvanCloud | Format: `"Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"` |
 | `CLOUDFLARE_DNS_API_TOKEN` | Cloudflare | Scoped API token with `DNS:Edit` and `Zone:Read` permissions |
 | `CLOUDFLARE_ZONE_API_TOKEN` | Cloudflare | Scoped zone token (if permissions are split across two tokens) |
-| `CLOUDFLARE_EMAIL` | Cloudflare | Legacy account email address (used with `CLOUDFLARE_API_KEY`) |
+| `CLOUDFLARE_EMAIL` | Cloudflare | Legacy account email address |
 | `CLOUDFLARE_API_KEY` | Cloudflare | Legacy global API key |
