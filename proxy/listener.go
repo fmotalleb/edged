@@ -12,8 +12,8 @@ import (
 	"github.com/fmotalleb/go-tools/log"
 	"go.uber.org/zap"
 
-	"github.com/fmotalleb/edged/internal/acme"
-	"github.com/fmotalleb/edged/internal/config"
+	"github.com/fmotalleb/edged/acme"
+	"github.com/fmotalleb/edged/config"
 )
 
 // Server manages all configured HTTP and HTTPS listener instances.

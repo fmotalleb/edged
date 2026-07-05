@@ -43,13 +43,12 @@
 ├── cmd/
 │   └── edged/
 │       └── main.go              # Cobra CLI entrypoint, commands, signal handling
-├── internal/
-│   ├── acme/
-│   │   ├── manager.go           # ACME client, SOCKS5 proxy setup, DNS-01 providers, cert caching
-│   │   └── user.go              # Registration account user implementation for Lego
-│   ├── config/
-│   │   └── config.go            # Mapstructure config loader, defaults, validation
-│   └── proxy/
+├── acme/
+│   ├── manager.go           # ACME client, SOCKS5 proxy setup, DNS-01 providers, cert caching
+│   └── user.go              # Registration account user implementation for Lego
+├── config/
+│   └── config.go            # Mapstructure config loader, defaults, validation
+├── proxy/
 │       ├── listener.go          # HTTP/HTTPS listener manager, TLS GetCertificate binding
 │       └── reverse_proxy.go     # ReverseProxy routing engine, custom director, error handling
 ├── config.yaml                  # Example production YAML configuration

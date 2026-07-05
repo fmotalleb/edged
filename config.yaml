@@ -90,7 +90,9 @@ acme:
 
   # Directory path where ACME account keys and certificates will be stored on disk
   storage_path: "./acme_storage"
-
+  recursive_nameservers:
+    - 217.218.155.155
+    - 217.218.127.127
   # Automatic renewal settings
   renew_before_days: 30      # Renew certificates when less than 30 days remain
   check_interval_hours: 24   # How often to check for expiring certificates

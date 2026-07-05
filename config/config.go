@@ -65,10 +65,11 @@ type ACMEConfig struct {
 
 // DNSProviderConfig defines settings for DNS-01 challenge providers.
 type DNSProviderConfig struct {
-	Name       string           `yaml:"name" mapstructure:"name"`             // Supported: "arvancloud", "cloudflare"
-	UseSOCKS5  bool             `yaml:"use_socks5" mapstructure:"use_socks5"` // If true, DNS API calls use ACME SOCKS5 proxy
-	ArvanCloud ArvanCloudConfig `yaml:"arvancloud" mapstructure:"arvancloud"`
-	Cloudflare CloudflareConfig `yaml:"cloudflare" mapstructure:"cloudflare"`
+	Name                 string           `yaml:"name" mapstructure:"name"`             // Supported: "arvancloud", "cloudflare"
+	UseSOCKS5            bool             `yaml:"use_socks5" mapstructure:"use_socks5"` // If true, DNS API calls use ACME SOCKS5 proxy
+	RecursiveNameservers []string         `yaml:"recursive_nameservers" mapstructure:"recursive_nameservers"`
+	ArvanCloud           ArvanCloudConfig `yaml:"arvancloud" mapstructure:"arvancloud"`
+	Cloudflare           CloudflareConfig `yaml:"cloudflare" mapstructure:"cloudflare"`
 }
 
 // ArvanCloudConfig contains credentials and timings for ArvanCloud DNS.

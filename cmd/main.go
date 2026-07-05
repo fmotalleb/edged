@@ -12,9 +12,9 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	"github.com/fmotalleb/edged/internal/acme"
-	"github.com/fmotalleb/edged/internal/config"
-	"github.com/fmotalleb/edged/internal/proxy"
+	"github.com/fmotalleb/edged/acme"
+	"github.com/fmotalleb/edged/config"
+	"github.com/fmotalleb/edged/proxy"
 )
 
 var (

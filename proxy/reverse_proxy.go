@@ -11,10 +11,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fmotalleb/edged/internal/config"
 	"github.com/fmotalleb/go-tools/log"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
+
+	"github.com/fmotalleb/edged/config"
 )
 
 // ProxyRouter manages routing rules and ReverseProxy instances for a listener.

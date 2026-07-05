@@ -19,7 +19,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fmotalleb/edged/internal/config"
 	"github.com/fmotalleb/go-tools/log"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
@@ -29,7 +28,11 @@ import (
 	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
 	"github.com/go-acme/lego/v4/registration"
 	"go.uber.org/zap"
+
+	"github.com/fmotalleb/edged/config"
 )
+
+var defaultRecursiveNS = []string{"8.8.8.8:53", "1.1.1.1:53"}
 
 // Manager handles automatic TLS certificate acquisition, renewal, and serving via Lego and Let's Encrypt.
 type Manager struct {
@@ -39,7 +42,7 @@ type Manager struct {
 	certs     map[string]*tls.Certificate // Map from domain name / wildcard pattern to TLS cert
 	certMeta  map[string]time.Time        // Map from domain name to expiration time
 	mu        sync.RWMutex
-	obtainMu  sync.Mutex                  // Mutex to prevent duplicate concurrent obtain requests
+	obtainMu  sync.Mutex // Mutex to prevent duplicate concurrent obtain requests
 	transport *http.Transport
 }
 
@@ -52,10 +55,10 @@ func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
 		certMeta: make(map[string]time.Time),
 	}
 
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "accounts"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "accounts"), 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create storage dir: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "certs"), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "certs"), 0o700); err != nil {
 		return nil, fmt.Errorf("failed to create certs dir: %w", err)
 	}
 
@@ -115,6 +118,10 @@ func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
 
 	// 5. Setup DNS-01 Provider (ArvanCloud or Cloudflare) for wildcard certificate support
 	providerName := strings.ToLower(strings.TrimSpace(cfg.DNSProvider.Name))
+	recursiveServers := cfg.DNSProvider.RecursiveNameservers
+	if len(recursiveServers) == 0 {
+		recursiveServers = defaultRecursiveNS
+	}
 	switch providerName {
 	case "arvancloud":
 		if cfg.DNSProvider.ArvanCloud.APIKey != "" {
@@ -144,7 +151,9 @@ func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
 			}
 
 			err = client.Challenge.SetDNS01Provider(provider,
-				dns01.AddRecursiveNameservers(dns01.ParseNameservers([]string{"8.8.8.8:53", "1.1.1.1:53"})),
+				dns01.AddRecursiveNameservers(
+					dns01.ParseNameservers(recursiveServers),
+				),
 			)
 			if err != nil {
 				return nil, fmt.Errorf("failed to set ArvanCloud DNS-01 provider: %w", err)
@@ -183,7 +192,7 @@ func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
 		}
 
 		err = client.Challenge.SetDNS01Provider(provider,
-			dns01.AddRecursiveNameservers(dns01.ParseNameservers([]string{"8.8.8.8:53", "1.1.1.1:53"})),
+			dns01.AddRecursiveNameservers(dns01.ParseNameservers(recursiveServers)),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("failed to set Cloudflare DNS-01 provider: %w", err)
@@ -318,10 +327,10 @@ func (m *Manager) obtainCertificate(ctx context.Context, domains []string) error
 	certPath := filepath.Join(m.cfg.StoragePath, "certs", primaryDomain+".crt")
 	keyPath := filepath.Join(m.cfg.StoragePath, "certs", primaryDomain+".key")
 
-	if err := os.WriteFile(certPath, certificates.Certificate, 0600); err != nil {
+	if err := os.WriteFile(certPath, certificates.Certificate, 0o600); err != nil {
 		return fmt.Errorf("failed to save cert to disk: %w", err)
 	}
-	if err := os.WriteFile(keyPath, certificates.PrivateKey, 0600); err != nil {
+	if err := os.WriteFile(keyPath, certificates.PrivateKey, 0o600); err != nil {
 		return fmt.Errorf("failed to save key to disk: %w", err)
 	}
 
@@ -461,12 +470,12 @@ func loadOrCreatePrivateKey(path string) (crypto.PrivateKey, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 
 	pemBlock := &pem.Block{Type: "EC PRIVATE KEY", Bytes: der}
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err
 	}

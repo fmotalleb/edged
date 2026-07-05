@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	"github.com/fmotalleb/edged/internal/config"
+	"github.com/fmotalleb/edged/config"
 )
 
 var validateCmd = &cobra.Command{
