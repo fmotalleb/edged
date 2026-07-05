@@ -2,6 +2,7 @@ package config
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -189,7 +190,7 @@ func (c *Config) validate(ctx context.Context) error {
 	logger := log.FromContext(ctx)
 
 	if len(c.Listeners) == 0 {
-		return fmt.Errorf("at least one listener must be configured under 'listeners:'")
+		return errors.New("at least one listener must be configured under 'listeners:'")
 	}
 
 	for i, l := range c.Listeners {
@@ -201,7 +202,7 @@ func (c *Config) validate(ctx context.Context) error {
 		}
 		if l.Protocol == "https" && l.TLS.UseACME {
 			if c.ACME.Email == "" {
-				return fmt.Errorf("acme.email is required when TLS with use_acme is enabled")
+				return errors.New("acme.email is required when TLS with use_acme is enabled")
 			}
 			if len(l.TLS.Domains) == 0 {
 				return fmt.Errorf("listener[%d] ('%s') has use_acme=true but no domains specified in tls.domains", i, l.Name)
@@ -233,12 +234,12 @@ func (c *Config) validate(ctx context.Context) error {
 		switch providerName {
 		case "arvancloud":
 			if c.ACME.DNSProvider.ArvanCloud.APIKey == "" {
-				return fmt.Errorf("arvancloud api_key is required for wildcard certificate generation (set in yaml or ARVANCLOUD_API_KEY env var)")
+				return errors.New("arvancloud api_key is required for wildcard certificate generation (set in yaml or ARVANCLOUD_API_KEY env var)")
 			}
 		case "cloudflare":
 			cf := c.ACME.DNSProvider.Cloudflare
 			if cf.APIToken == "" && (cf.AuthEmail == "" || cf.AuthKey == "") {
-				return fmt.Errorf("cloudflare credentials required: provide api_token (or CLOUDFLARE_DNS_API_TOKEN env var), OR auth_email and auth_key")
+				return errors.New("cloudflare credentials required: provide api_token (or CLOUDFLARE_DNS_API_TOKEN env var), OR auth_email and auth_key")
 			}
 		default:
 			return fmt.Errorf("unsupported dns_provider.name: '%s'. Supported providers: arvancloud, cloudflare", c.ACME.DNSProvider.Name)

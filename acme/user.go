@@ -30,14 +30,14 @@ func (u *User) GetPrivateKey() crypto.PrivateKey {
 
 // saveUser persists account registration details to disk as JSON.
 func saveUser(path string, u *User) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(u, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return os.WriteFile(path, data, 0o600)
 }
 
 // loadUser loads account registration details from disk.

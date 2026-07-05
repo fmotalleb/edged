@@ -26,7 +26,7 @@ type ProxyRouter struct {
 
 	// baseCtx is the context the server/listener was started with. Every
 	// request handled by this router is tied to it, so that shutting down
-	// the server (cancelling baseCtx) cancels in-flight proxied requests too.
+	// the server (canceling baseCtx) cancels in-flight proxied requests too.
 	baseCtx context.Context
 }
 
@@ -172,8 +172,8 @@ func (r *ProxyRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 }
 
 // deriveContext returns a context that carries reqCtx's values/deadline but is
-// also cancelled if the router's baseCtx (the server's lifetime context) is
-// cancelled first - e.g. on graceful shutdown.
+// also canceled if the router's baseCtx (the server's lifetime context) is
+// canceled first - e.g. on graceful shutdown.
 func (r *ProxyRouter) deriveContext(reqCtx context.Context) (context.Context, context.CancelFunc) {
 	if r.baseCtx == nil {
 		return reqCtx, func() {}
