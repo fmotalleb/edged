@@ -35,10 +35,8 @@ listeners:
       # List of domains to acquire certificates for.
       # Wildcard domains (*.example.com) require DNS-01 challenge (ArvanCloud or Cloudflare).
       domains:
-        - "dornicademo.ir"
-        - "*.dornicademo.ir"
-        # - "cdn.example.org"
-        # - "*.cdn.example.org"
+        - "cdn.example.org"
+        - "*.cdn.example.org"
     routes:
       # Route 1: Exact domain routing
       - host: "example.com"
@@ -46,6 +44,13 @@ listeners:
         upstream: "http://127.0.0.1:8080"
         strip_prefix: false
         timeout: 30s
+        dialer_timeout: 30s
+        dialer_keepalive: 30s
+        force_attempt_http2: true
+        max_idle_conns: 100
+        idle_conn_timeout: 90s
+        tls_handshake_timeout: 10s
+        expect_continue_timeout: 1s
         custom_headers:
           X-Proxy-Engine: "Go-Advanced-Proxy"
 
@@ -99,9 +104,9 @@ acme:
     # Supported providers: "arvancloud", "cloudflare"
     name: "arvancloud"       # Switch between "arvancloud" or "cloudflare"
     use_socks5: false         # If true, DNS API calls will also be tunneled through socks5_proxy
-    recursive_nameservers:
-      - 217.218.155.155:53
-      - 217.218.127.127:53
+    recursive_nameservers: # TXT records will be tested against these nameservers for propagation before proceeding with certificate issuance.
+      - 8.8.8.8:53
+      - 1.1.1.1:53
     # --------------------------------------------------------------------------
     # 1. ArvanCloud DNS Provider Configuration
     # --------------------------------------------------------------------------
@@ -109,7 +114,7 @@ acme:
       # ArvanCloud API Key
       # Must start with "Apikey " (e.g., "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
       # Can also be provided via the ARVANCLOUD_API_KEY environment variable.
-      api_key: "apikey c5cf356d-2455-57f0-8c5d-313565968c41"
+      api_key: "apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
       propagation_timeout: 120 # Maximum time in seconds to wait for DNS TXT record propagation
       polling_interval: 2      # Interval in seconds between DNS check polls
       ttl: 600                 # TTL in seconds for created TXT records
