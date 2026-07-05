@@ -9,6 +9,7 @@ import (
 
 	toolconfig "github.com/fmotalleb/go-tools/config"
 	"github.com/fmotalleb/go-tools/decoder"
+	"github.com/fmotalleb/go-tools/defaulter"
 	"github.com/fmotalleb/go-tools/log"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -23,11 +24,18 @@ type Config struct {
 
 // ListenerConfig defines a network listener (e.g., HTTP or HTTPS).
 type ListenerConfig struct {
-	Name                string        `yaml:"name" mapstructure:"name"`
-	Address             string        `yaml:"address" mapstructure:"address"`
-	Protocol            string        `yaml:"protocol" mapstructure:"protocol"`                           // "http" or "https"
-	RedirectToHTTPS     bool          `yaml:"redirect_to_https" mapstructure:"redirect_to_https"`         // If true on HTTP, redirects to HTTPS
-	UpstreamSOCKS5Proxy string        `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"` // Default SOCKS5 proxy for routes under this listener
+	Name    string `yaml:"name" mapstructure:"name"`
+	Address string `yaml:"address" mapstructure:"address"`
+	// Protocol is intentionally left without a `default` tag: its default
+	// depends on the listener's Address (":443" -> "https"), which the
+	// defaulter package can't express as a static tag. It's resolved
+	// manually in setDefaults after ApplyDefaults runs.
+	Protocol        string `yaml:"protocol" mapstructure:"protocol"`
+	RedirectToHTTPS bool   `yaml:"redirect_to_https" mapstructure:"redirect_to_https"`
+	// UpstreamSOCKS5Proxy is inherited Global -> Listener, which is also
+	// value-dependent on a sibling config tree rather than a static default,
+	// so it's resolved manually rather than via a tag.
+	UpstreamSOCKS5Proxy string        `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"`
 	TLS                 TLSConfig     `yaml:"tls" mapstructure:"tls"`
 	Routes              []RouteConfig `yaml:"routes" mapstructure:"routes"`
 }
@@ -43,30 +51,40 @@ type TLSConfig struct {
 
 // RouteConfig defines routing rules from virtual host/path to upstream backends.
 type RouteConfig struct {
-	Host                string            `yaml:"host" mapstructure:"host"`                                   // Exact domain or wildcard (*.example.com)
-	PathPrefix          string            `yaml:"path_prefix" mapstructure:"path_prefix"`                     // e.g., "/" or "/api"
-	Upstream            string            `yaml:"upstream" mapstructure:"upstream"`                           // e.g., "http://127.0.0.1:8080"
-	StripPrefix         bool              `yaml:"strip_prefix" mapstructure:"strip_prefix"`                   // If true, strips PathPrefix before forwarding
-	Timeout             time.Duration     `yaml:"timeout" mapstructure:"timeout"`                             // Request timeout
-	CustomHeaders       map[string]string `yaml:"custom_headers" mapstructure:"custom_headers"`               // Headers to inject before sending to upstream
-	UpstreamSOCKS5Proxy string            `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"` // Optional SOCKS5 proxy to reach upstream
+	Host          string            `yaml:"host" mapstructure:"host"` // Exact domain or wildcard (*.example.com)
+	PathPrefix    string            `yaml:"path_prefix" mapstructure:"path_prefix" default:"/"`
+	Upstream      string            `yaml:"upstream" mapstructure:"upstream"`         // e.g., "http://127.0.0.1:8080"
+	StripPrefix   bool              `yaml:"strip_prefix" mapstructure:"strip_prefix"` // If true, strips PathPrefix before forwarding
+	Timeout       time.Duration     `yaml:"timeout" mapstructure:"timeout" default:"30s"`
+	CustomHeaders map[string]string `yaml:"custom_headers" mapstructure:"custom_headers"` // Headers to inject before sending to upstream
+	// UpstreamSOCKS5Proxy is inherited Listener -> Route; resolved manually
+	// in setDefaults for the same reason as ListenerConfig.UpstreamSOCKS5Proxy.
+	UpstreamSOCKS5Proxy string `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"`
+
+	DialerTimeout         time.Duration `yaml:"dialer_timeout" mapstructure:"dialer_timeout" default:"30s"`
+	DialerKeepalive       time.Duration `yaml:"dialer_keepalive" mapstructure:"dialer_keepalive" default:"30s"`
+	ForceAttemptHTTP2     bool          `yaml:"force_attempt_http2" mapstructure:"force_attempt_http2" default:"true"`
+	MaxIdleConns          int           `yaml:"max_idle_conns" mapstructure:"max_idle_conns" default:"100"`
+	IdleConnTimeout       time.Duration `yaml:"idle_conn_timeout" mapstructure:"idle_conn_timeout" default:"90s"`
+	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout" mapstructure:"tls_handshake_timeout" default:"10s"`
+	ExpectContinueTimeout time.Duration `yaml:"expect_continue_timeout" mapstructure:"expect_continue_timeout" default:"1s"`
 }
 
 // ACMEConfig defines global settings for Let's Encrypt certificate acquisition.
 type ACMEConfig struct {
-	Email              string            `yaml:"email" mapstructure:"email"`
-	DirectoryURL       string            `yaml:"directory_url" mapstructure:"directory_url"`
+	Email              string            `yaml:"email" mapstructure:"email"` // required; validated separately, no default
+	DirectoryURL       string            `yaml:"directory_url" mapstructure:"directory_url" default:"https://acme-v02.api.letsencrypt.org/directory"`
 	SOCKS5Proxy        string            `yaml:"socks5_proxy" mapstructure:"socks5_proxy"`
-	StoragePath        string            `yaml:"storage_path" mapstructure:"storage_path"`
-	RenewBeforeDays    int               `yaml:"renew_before_days" mapstructure:"renew_before_days"`
-	CheckIntervalHours int               `yaml:"check_interval_hours" mapstructure:"check_interval_hours"`
+	StoragePath        string            `yaml:"storage_path" mapstructure:"storage_path" default:"./acme_storage"`
+	RenewBeforeDays    int               `yaml:"renew_before_days" mapstructure:"renew_before_days" default:"30"`
+	CheckIntervalHours int               `yaml:"check_interval_hours" mapstructure:"check_interval_hours" default:"24"`
 	DNSProvider        DNSProviderConfig `yaml:"dns_provider" mapstructure:"dns_provider"`
 }
 
 // DNSProviderConfig defines settings for DNS-01 challenge providers.
 type DNSProviderConfig struct {
-	Name                 string           `yaml:"name" mapstructure:"name"`             // Supported: "arvancloud", "cloudflare"
-	UseSOCKS5            bool             `yaml:"use_socks5" mapstructure:"use_socks5"` // If true, DNS API calls use ACME SOCKS5 proxy
+	Name                 string           `yaml:"name" mapstructure:"name" default:"cloudflare"` // Supported: "arvancloud", "cloudflare"
+	UseSOCKS5            bool             `yaml:"use_socks5" mapstructure:"use_socks5"`          // If true, DNS API calls use ACME SOCKS5 proxy
 	RecursiveNameservers []string         `yaml:"recursive_nameservers" mapstructure:"recursive_nameservers"`
 	ArvanCloud           ArvanCloudConfig `yaml:"arvancloud" mapstructure:"arvancloud"`
 	Cloudflare           CloudflareConfig `yaml:"cloudflare" mapstructure:"cloudflare"`
@@ -74,21 +92,23 @@ type DNSProviderConfig struct {
 
 // ArvanCloudConfig contains credentials and timings for ArvanCloud DNS.
 type ArvanCloudConfig struct {
-	APIKey             string `yaml:"api_key" mapstructure:"api_key"`
-	PropagationTimeout int    `yaml:"propagation_timeout" mapstructure:"propagation_timeout"` // in seconds
-	PollingInterval    int    `yaml:"polling_interval" mapstructure:"polling_interval"`       // in seconds
-	TTL                int    `yaml:"ttl" mapstructure:"ttl"`                                 // in seconds
+	// APIKey falls back to ARVANCLOUD_API_KEY only if not set in YAML.
+	APIKey             string `yaml:"api_key" mapstructure:"api_key" env:"ARVANCLOUD_API_KEY"`
+	PropagationTimeout int    `yaml:"propagation_timeout" mapstructure:"propagation_timeout" default:"120"` // in seconds
+	PollingInterval    int    `yaml:"polling_interval" mapstructure:"polling_interval" default:"2"`         // in seconds
+	TTL                int    `yaml:"ttl" mapstructure:"ttl" default:"600"`                                 // in seconds
 }
 
 // CloudflareConfig contains credentials and timings for Cloudflare DNS.
 type CloudflareConfig struct {
-	APIToken           string `yaml:"api_token" mapstructure:"api_token"`                     // Scoped DNS API Token (Recommended)
-	ZoneToken          string `yaml:"zone_token" mapstructure:"zone_token"`                   // Optional Scoped Zone API Token
-	AuthEmail          string `yaml:"auth_email" mapstructure:"auth_email"`                   // Legacy Email
-	AuthKey            string `yaml:"auth_key" mapstructure:"auth_key"`                       // Legacy API Key
-	PropagationTimeout int    `yaml:"propagation_timeout" mapstructure:"propagation_timeout"` // in seconds
-	PollingInterval    int    `yaml:"polling_interval" mapstructure:"polling_interval"`       // in seconds
-	TTL                int    `yaml:"ttl" mapstructure:"ttl"`                                 // in seconds
+	// Credential fields fall back to their env vars only if not set in YAML.
+	APIToken           string `yaml:"api_token" mapstructure:"api_token" env:"CLOUDFLARE_DNS_API_TOKEN"`    // Scoped DNS API Token (Recommended)
+	ZoneToken          string `yaml:"zone_token" mapstructure:"zone_token" env:"CLOUDFLARE_ZONE_API_TOKEN"` // Optional Scoped Zone API Token
+	AuthEmail          string `yaml:"auth_email" mapstructure:"auth_email" env:"CLOUDFLARE_EMAIL"`          // Legacy Email
+	AuthKey            string `yaml:"auth_key" mapstructure:"auth_key" env:"CLOUDFLARE_API_KEY"`            // Legacy API Key
+	PropagationTimeout int    `yaml:"propagation_timeout" mapstructure:"propagation_timeout" default:"120"` // in seconds
+	PollingInterval    int    `yaml:"polling_interval" mapstructure:"polling_interval" default:"2"`         // in seconds
+	TTL                int    `yaml:"ttl" mapstructure:"ttl" default:"300"`                                 // in seconds
 }
 
 // Load reads and parses a configuration file from path using github.com/fmotalleb/go-tools/config (uses mapstructure).
@@ -112,7 +132,9 @@ func Load(ctx context.Context, path string) (*Config, error) {
 	if err = decoder.Decode(&cfg, cfgMap); err != nil {
 		return nil, fmt.Errorf("failed to parse config object: %w", err)
 	}
-	cfg.setDefaults(ctx)
+	if err := cfg.setDefaults(ctx); err != nil {
+		return nil, fmt.Errorf("failed to apply configuration defaults: %w", err)
+	}
 	if err := cfg.validate(ctx); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
@@ -121,68 +143,23 @@ func Load(ctx context.Context, path string) (*Config, error) {
 	return &cfg, nil
 }
 
-// setDefaults applies sensible defaults to optional configuration fields and inherits hierarchical proxy settings.
-func (c *Config) setDefaults(ctx context.Context) {
-	logger := log.FromContext(ctx)
-
-	if c.ACME.DirectoryURL == "" {
-		c.ACME.DirectoryURL = "https://acme-v02.api.letsencrypt.org/directory"
-	}
-	if c.ACME.StoragePath == "" {
-		c.ACME.StoragePath = "./acme_storage"
-	}
-	if c.ACME.RenewBeforeDays == 0 {
-		c.ACME.RenewBeforeDays = 30
-	}
-	if c.ACME.CheckIntervalHours == 0 {
-		c.ACME.CheckIntervalHours = 24
-	}
-	if c.ACME.DNSProvider.Name == "" {
-		c.ACME.DNSProvider.Name = "cloudflare"
-	}
-
-	// ArvanCloud defaults
-	if c.ACME.DNSProvider.ArvanCloud.PropagationTimeout == 0 {
-		c.ACME.DNSProvider.ArvanCloud.PropagationTimeout = 120
-	}
-	if c.ACME.DNSProvider.ArvanCloud.PollingInterval == 0 {
-		c.ACME.DNSProvider.ArvanCloud.PollingInterval = 2
-	}
-	if c.ACME.DNSProvider.ArvanCloud.TTL == 0 {
-		c.ACME.DNSProvider.ArvanCloud.TTL = 600
-	}
-
-	// Cloudflare defaults
-	if c.ACME.DNSProvider.Cloudflare.PropagationTimeout == 0 {
-		c.ACME.DNSProvider.Cloudflare.PropagationTimeout = 120
-	}
-	if c.ACME.DNSProvider.Cloudflare.PollingInterval == 0 {
-		c.ACME.DNSProvider.Cloudflare.PollingInterval = 2
-	}
-	if c.ACME.DNSProvider.Cloudflare.TTL == 0 {
-		c.ACME.DNSProvider.Cloudflare.TTL = 300
-	}
-
-	// Override credentials from environment variables if present
-	if envKey := os.Getenv("ARVANCLOUD_API_KEY"); envKey != "" {
-		logger.Debug("Overriding ArvanCloud API key from ARVANCLOUD_API_KEY environment variable")
-		c.ACME.DNSProvider.ArvanCloud.APIKey = envKey
-	}
-	if envToken := os.Getenv("CLOUDFLARE_DNS_API_TOKEN"); envToken != "" {
-		logger.Debug("Overriding Cloudflare DNS API token from CLOUDFLARE_DNS_API_TOKEN environment variable")
-		c.ACME.DNSProvider.Cloudflare.APIToken = envToken
-	}
-	if envZoneToken := os.Getenv("CLOUDFLARE_ZONE_API_TOKEN"); envZoneToken != "" {
-		c.ACME.DNSProvider.Cloudflare.ZoneToken = envZoneToken
-	}
-	if envEmail := os.Getenv("CLOUDFLARE_EMAIL"); envEmail != "" {
-		c.ACME.DNSProvider.Cloudflare.AuthEmail = envEmail
-	}
-	if envKey := os.Getenv("CLOUDFLARE_API_KEY"); envKey != "" {
-		c.ACME.DNSProvider.Cloudflare.AuthKey = envKey
+// setDefaults applies `default`/`env` tag values across the whole config tree
+// via github.com/fmotalleb/go-tools/defaulter, then resolves the handful of
+// values that depend on sibling/parent fields rather than a static default
+// (listener protocol inference, and hierarchical SOCKS5 proxy inheritance).
+func (c *Config) setDefaults(ctx context.Context) error {
+	// Fills every zero-valued field tagged with `default:"..."`, falling back
+	// to the corresponding `env:"..."` var first if present. Only touches
+	// fields left empty by the YAML/mapstructure decode above. Returns an
+	// aggregated error if any default value failed to decode into its field,
+	// rather than silently leaving that field at its zero value.
+	if err := defaulter.ApplyDefaults(c, nil); err != nil {
+		return err
 	}
 
 	// Apply hierarchical SOCKS5 proxy inheritance (Global -> Listener -> Route)
+	// and protocol inference - both depend on sibling/parent values, so they
+	// can't be expressed as static `default` tags.
 	for i := range c.Listeners {
 		l := &c.Listeners[i]
 		if l.Protocol == "" {
@@ -198,17 +175,13 @@ func (c *Config) setDefaults(ctx context.Context) {
 
 		for j := range l.Routes {
 			r := &l.Routes[j]
-			if r.PathPrefix == "" {
-				r.PathPrefix = "/"
-			}
-			if r.Timeout == 0 {
-				r.Timeout = 30 * time.Second
-			}
 			if r.UpstreamSOCKS5Proxy == "" && l.UpstreamSOCKS5Proxy != "" {
 				r.UpstreamSOCKS5Proxy = l.UpstreamSOCKS5Proxy
 			}
 		}
 	}
+
+	return nil
 }
 
 // validate checks the configuration for required fields and consistency.

@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fmotalleb/go-tools/log"
 	"go.uber.org/zap"
@@ -58,14 +57,14 @@ func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes [
 		transport := &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
+				Timeout:   rc.DialerTimeout,
+				KeepAlive: rc.DialerKeepalive,
 			}).DialContext,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
+			ForceAttemptHTTP2:     rc.ForceAttemptHTTP2,
+			MaxIdleConns:          rc.MaxIdleConns,
+			IdleConnTimeout:       rc.IdleConnTimeout,
+			TLSHandshakeTimeout:   rc.TLSHandshakeTimeout,
+			ExpectContinueTimeout: rc.ExpectContinueTimeout,
 		}
 
 		// Upgrade to explicit SOCKS5 socket dialing if upstream_socks5_proxy is configured
