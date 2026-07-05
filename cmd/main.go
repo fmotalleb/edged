@@ -20,6 +20,7 @@ import (
 var (
 	configPath string
 	testConfig bool
+	verbose    bool
 )
 
 var rootCmd = &cobra.Command{
@@ -28,6 +29,11 @@ var rootCmd = &cobra.Command{
 	Long: `edged is a high-performance Golang reverse proxy that provides automated TLS handling
 via Let's Encrypt (ACME v2), comprehensive SOCKS5 proxy tunneling across all layers, and
 first-class integration with ArvanCloud and Cloudflare for wildcard certificate generation.`,
+	PersistentPreRun: func(_ *cobra.Command, _ []string) {
+		if verbose {
+			log.SetDebugDefaults()
+		}
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -43,7 +49,8 @@ func Execute() {
 }
 
 func runServer(ctx context.Context) error {
-	logger := log.FromContext(ctx)
+	ctx = log.WithNewEnvLoggerForced(ctx)
+	logger := log.Of(ctx)
 	logger.Info("Initializing edged reverse proxy server...", zap.String("config", configPath))
 
 	cfg, err := config.Load(ctx, configPath)
@@ -117,4 +124,5 @@ func runServer(ctx context.Context) error {
 func init() {
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "config.yaml", "Path to YAML configuration file")
 	rootCmd.PersistentFlags().BoolVarP(&testConfig, "test", "t", false, "Validate configuration file and exit")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Verbose logging")
 }

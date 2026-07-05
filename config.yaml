@@ -35,10 +35,10 @@ listeners:
       # List of domains to acquire certificates for.
       # Wildcard domains (*.example.com) require DNS-01 challenge (ArvanCloud or Cloudflare).
       domains:
-        - "example.com"
-        - "*.example.com"
-        - "cdn.example.org"
-        - "*.cdn.example.org"
+        - "dornicademo.ir"
+        - "*.dornicademo.ir"
+        # - "cdn.example.org"
+        # - "*.cdn.example.org"
     routes:
       # Route 1: Exact domain routing
       - host: "example.com"
@@ -86,7 +86,7 @@ acme:
   # SOCKS5 Proxy used to send all HTTP/HTTPS requests to Let's Encrypt ACME servers.
   # Format: "socks5://[user:password@]host:port" (e.g., "socks5://127.0.0.1:1080")
   # Leave empty ("") to connect directly without a proxy.
-  socks5_proxy: "socks5://127.0.0.1:1080"
+  socks5_proxy: "socks5://127.0.0.1:2080"
 
   # Directory path where ACME account keys and certificates will be stored on disk
   storage_path: "./acme_storage"
@@ -98,8 +98,8 @@ acme:
   # DNS-01 Challenge Provider Settings (Required for Wildcard certificates)
   dns_provider:
     # Supported providers: "arvancloud", "cloudflare"
-    name: "cloudflare"       # Switch between "arvancloud" or "cloudflare"
-    use_socks5: true         # If true, DNS API calls will also be tunneled through socks5_proxy
+    name: "arvancloud"       # Switch between "arvancloud" or "cloudflare"
+    use_socks5: false         # If true, DNS API calls will also be tunneled through socks5_proxy
 
     # --------------------------------------------------------------------------
     # 1. ArvanCloud DNS Provider Configuration
@@ -108,7 +108,7 @@ acme:
       # ArvanCloud API Key
       # Must start with "Apikey " (e.g., "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
       # Can also be provided via the ARVANCLOUD_API_KEY environment variable.
-      api_key: "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      api_key: "apikey c5cf356d-2455-57f0-8c5d-313565968c41"
       propagation_timeout: 120 # Maximum time in seconds to wait for DNS TXT record propagation
       polling_interval: 2      # Interval in seconds between DNS check polls
       ttl: 600                 # TTL in seconds for created TXT records

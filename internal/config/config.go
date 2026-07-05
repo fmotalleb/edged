@@ -8,6 +8,7 @@ import (
 	"time"
 
 	toolconfig "github.com/fmotalleb/go-tools/config"
+	"github.com/fmotalleb/go-tools/decoder"
 	"github.com/fmotalleb/go-tools/log"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -93,20 +94,23 @@ type CloudflareConfig struct {
 func Load(ctx context.Context, path string) (*Config, error) {
 	logger := log.FromContext(ctx)
 	logger.Info("Loading configuration file", zap.String("path", path))
-
+	var err error
+	var cfgMap map[string]any
 	var cfg Config
 	// Use config parser from github.com/fmotalleb/go-tools/config which utilizes mapstructure
-	if cfg, err := toolconfig.ReadAndMergeConfig(ctx, path); err != nil {
+	if cfgMap, err = toolconfig.ReadAndMergeConfig(ctx, path); err != nil {
 		logger.Debug("toolconfig.Load returned error or fallback needed, attempting direct YAML unmarshal with mapstructure struct tags", zap.Error(err))
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read config file %s: %w", path, readErr)
 		}
 		if err := yaml.Unmarshal(data, &cfg); err != nil {
-			return nil, fmt.Errorf("failed to parse YAML config: %w", err)
+			return nil, fmt.Errorf("failed to parse config: %w", err)
 		}
 	}
-
+	if err = decoder.Decode(&cfg, cfgMap); err != nil {
+		return nil, fmt.Errorf("failed to parse config object: %w", err)
+	}
 	cfg.setDefaults(ctx)
 	if err := cfg.validate(ctx); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
