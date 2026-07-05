@@ -64,4 +64,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/golang-templates/seed
+        - github.com/fmotalleb/edged

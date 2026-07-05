@@ -1,0 +1,134 @@
+# ==============================================================================
+# Golang Reverse Proxy with ACME TLS & DNS-01 Wildcard Support
+# Supported DNS Providers: ArvanCloud, Cloudflare
+# SOCKS5 Proxy Support: Let's Encrypt API, DNS APIs, and Upstream Backends
+# ==============================================================================
+
+# Global default SOCKS5 proxy for connecting to upstream backends.
+# Can be overridden per listener or per individual route.
+# Format: "socks5://[user:password@]host:port" (e.g., "socks5://127.0.0.1:1080")
+default_upstream_socks5_proxy: ""
+
+listeners:
+  # HTTP Listener (Port 80)
+  # Commonly used to redirect all HTTP traffic to HTTPS, or serve plain HTTP backends.
+  - name: "http-listener"
+    address: "0.0.0.0:80"
+    protocol: "http"
+    redirect_to_https: true # If true, redirects all incoming HTTP requests to HTTPS (port 443)
+    routes:
+      # Fallback routes if redirect_to_https is false
+      - host: "example.com"
+        path_prefix: "/"
+        upstream: "http://127.0.0.1:8080"
+
+  # HTTPS Listener (Port 443)
+  # Acts as reverse proxy with automatic TLS handling via ACME (Let's Encrypt).
+  - name: "https-listener"
+    address: "0.0.0.0:443"
+    protocol: "https"
+    # Optional listener-level SOCKS5 proxy for all routes under this listener
+    upstream_socks5_proxy: "" # e.g., "socks5://127.0.0.1:1080"
+    tls:
+      enabled: true
+      use_acme: true
+      # List of domains to acquire certificates for.
+      # Wildcard domains (*.example.com) require DNS-01 challenge (ArvanCloud or Cloudflare).
+      domains:
+        - "example.com"
+        - "*.example.com"
+        - "cdn.example.org"
+        - "*.cdn.example.org"
+    routes:
+      # Route 1: Exact domain routing
+      - host: "example.com"
+        path_prefix: "/"
+        upstream: "http://127.0.0.1:8080"
+        strip_prefix: false
+        timeout: 30s
+        custom_headers:
+          X-Proxy-Engine: "Go-Advanced-Proxy"
+
+      # Route 2: API subdomain with path stripping
+      - host: "api.example.com"
+        path_prefix: "/v1"
+        upstream: "http://127.0.0.1:3000"
+        strip_prefix: false
+        timeout: 60s
+
+      # Route 3: Wildcard fallback for any other subdomain (e.g. tenant1.example.com)
+      # Route-level SOCKS5 proxy: tunnels traffic to this specific upstream via SOCKS5
+      - host: "*.example.com"
+        path_prefix: "/"
+        upstream: "http://10.0.0.10:8081"
+        strip_prefix: false
+        timeout: 30s
+        upstream_socks5_proxy: "socks5://127.0.0.1:1080"
+
+      # Route 4: Secondary domain wildcard routed via SOCKS5
+      - host: "*.cdn.example.org"
+        path_prefix: "/"
+        upstream: "http://10.0.0.50:80"
+        upstream_socks5_proxy: "socks5://127.0.0.1:1080"
+
+# ==============================================================================
+# Global ACME / Let's Encrypt Configuration
+# ==============================================================================
+acme:
+  # Email address for ACME account registration and expiration notices
+  email: "admin@example.com"
+
+  # Let's Encrypt Directory URL
+  # Production: https://acme-v02.api.letsencrypt.org/directory
+  # Staging (recommended during setup/testing): https://acme-staging-v02.api.letsencrypt.org/directory
+  directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+
+  # SOCKS5 Proxy used to send all HTTP/HTTPS requests to Let's Encrypt ACME servers.
+  # Format: "socks5://[user:password@]host:port" (e.g., "socks5://127.0.0.1:1080")
+  # Leave empty ("") to connect directly without a proxy.
+  socks5_proxy: "socks5://127.0.0.1:1080"
+
+  # Directory path where ACME account keys and certificates will be stored on disk
+  storage_path: "./acme_storage"
+
+  # Automatic renewal settings
+  renew_before_days: 30      # Renew certificates when less than 30 days remain
+  check_interval_hours: 24   # How often to check for expiring certificates
+
+  # DNS-01 Challenge Provider Settings (Required for Wildcard certificates)
+  dns_provider:
+    # Supported providers: "arvancloud", "cloudflare"
+    name: "cloudflare"       # Switch between "arvancloud" or "cloudflare"
+    use_socks5: true         # If true, DNS API calls will also be tunneled through socks5_proxy
+
+    # --------------------------------------------------------------------------
+    # 1. ArvanCloud DNS Provider Configuration
+    # --------------------------------------------------------------------------
+    arvancloud:
+      # ArvanCloud API Key
+      # Must start with "Apikey " (e.g., "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+      # Can also be provided via the ARVANCLOUD_API_KEY environment variable.
+      api_key: "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      propagation_timeout: 120 # Maximum time in seconds to wait for DNS TXT record propagation
+      polling_interval: 2      # Interval in seconds between DNS check polls
+      ttl: 600                 # TTL in seconds for created TXT records
+
+    # --------------------------------------------------------------------------
+    # 2. Cloudflare DNS Provider Configuration
+    # --------------------------------------------------------------------------
+    cloudflare:
+      # Recommended: Scoped DNS API Token with Zone:Read and DNS:Edit permissions.
+      # Can also be provided via the CLOUDFLARE_DNS_API_TOKEN environment variable.
+      api_token: "your_cloudflare_dns_api_token_here"
+      # Optional: Zone API Token if your permissions are split across two tokens.
+      # Can also be provided via the CLOUDFLARE_ZONE_API_TOKEN environment variable.
+      zone_token: ""
+
+      # Legacy Authentication (Use ONLY if not using api_token above):
+      # Can also be provided via CLOUDFLARE_EMAIL and CLOUDFLARE_API_KEY env vars.
+      auth_email: ""           # e.g., "admin@example.com"
+      auth_key: ""             # e.g., "legacy_global_api_key_here"
+
+      propagation_timeout: 120 # Maximum time in seconds to wait for DNS propagation
+      polling_interval: 2      # Interval in seconds between DNS check polls
+      ttl: 300                 # TTL in seconds for created TXT records

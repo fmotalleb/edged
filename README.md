@@ -1,153 +1,208 @@
-# Go Repository Template
+# Golang Reverse Proxy with ACME TLS & DNS-01 Wildcard Support
 
-[![Keep a Changelog](https://img.shields.io/badge/changelog-Keep%20a%20Changelog-%23E05735)](CHANGELOG.md)
-[![Go Reference](https://pkg.go.dev/badge/github.com/golang-templates/seed.svg)](https://pkg.go.dev/github.com/golang-templates/seed)
-[![go.mod](https://img.shields.io/github/go-mod/go-version/golang-templates/seed)](go.mod)
-[![LICENSE](https://img.shields.io/github/license/golang-templates/seed)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/golang-templates/seed)](https://goreportcard.com/report/github.com/golang-templates/seed)
-[![Codecov](https://codecov.io/gh/golang-templates/seed/branch/main/graph/badge.svg)](https://codecov.io/gh/golang-templates/seed)
+A production-grade, high-performance Golang web server designed specifically to **always act as a reverse proxy**. It features automated TLS certificate acquisition and renewal via **Let's Encrypt (ACME v2)**, comprehensive **SOCKS5 proxy tunneling** across all layers (Let's Encrypt API, DNS challenge APIs, and upstream backends), and first-class integration with **ArvanCloud CDN** and **Cloudflare** for generating **wildcard certificates (`*.example.com`)** via the DNS-01 challenge.
 
-⭐ `Star` this repository if you find it valuable and worth maintaining.
+---
 
-👁 `Watch` this repository to get notified about new releases, issues, etc.
+## 🌟 Key Features
 
-## Description
+1. **Dedicated Reverse Proxy Architecture**:
+   - Built on Go's robust `httputil.ReverseProxy` engine with custom timeout thresholds.
+   - **Virtual Host Routing**: Exact host match (`example.com`), wildcard subdomain match (`*.example.com`), and fallback routing.
+   - **Path Prefix Routing**: Longest prefix matching with optional path prefix stripping (`strip_prefix: true`).
+   - **Standard & Custom Header Injection**: Automatic handling of `X-Forwarded-For`, `X-Forwarded-Proto`, `X-Forwarded-Host`, `X-Real-IP`, plus user-defined custom headers.
+   - **HTTP $\rightarrow$ HTTPS Redirection**: Configurable redirector on HTTP port 80.
 
-This is a GitHub repository template for a Go application.
-You can use it:
+2. **Comprehensive SOCKS5 Proxy Support Across All Layers**:
+   - **Upstream Reverse Proxy Tunneling**: Uses `golang.org/x/net/proxy` to establish explicit SOCKS5 TCP socket connections to backend services. Whether your backend is HTTP, HTTPS, or upgraded WebSockets, traffic dials cleanly through your SOCKS5 proxy without proxy-header interference.
+   - **Hierarchical Inheritance**: Configure a SOCKS5 proxy globally (`default_upstream_socks5_proxy`), override it per listener (`upstream_socks5_proxy`), or specialize it per route.
+   - **ACME & DNS API Tunneling**: Route Let's Encrypt account validation and DNS provider API calls (`https://api.cloudflare.com` or `https://napi.arvancloud.ir`) through your SOCKS5 proxy (`acme.socks5_proxy` and `use_socks5: true`).
 
-- to create a new repository with automation and environment setup,
-- as reference when improving automation for an existing repository.
+3. **Automated TLS Handling via Let's Encrypt (ACME v2)**:
+   - Uses `github.com/go-acme/lego/v4` for reliable ACME v2 communication.
+   - **On-Demand & Startup Acquisition**: Validates and acquires missing certificates on boot and during TLS handshakes without blocking active traffic.
+   - **Background Renewal Daemon**: Automatically checks and renews certificates when they enter the renewal window (default: 30 days remaining).
+   - **Disk & Memory Caching**: Persists certificates and ECDSA account keys securely to disk (`acme_storage/`).
 
-It includes:
+4. **Multi-Provider DNS-01 Challenge Support (Wildcard Certificates)**:
+   - **Cloudflare DNS**: Implements Let's Encrypt DNS-01 challenges via Cloudflare v4 API using scoped API tokens (`CLOUDFLARE_DNS_API_TOKEN`) or legacy global API keys.
+   - **ArvanCloud CDN DNS**: Integrated with ArvanCloud API (`ARVANCLOUD_API_KEY`) for seamless TXT record creation and cleanup.
+   - Automatically generates wildcard certificates (`*.example.com`) without manual intervention.
 
-- continuous integration via [GitHub Actions](https://github.com/features/actions),
-- build automation via [Make](https://www.gnu.org/software/make),
-- dependency management using [Go Modules](https://github.com/golang/go/wiki/Modules),
-- code formatting using [gofumpt](https://github.com/mvdan/gofumpt),
-- linting with [golangci-lint](https://github.com/golangci/golangci-lint),
-  [misspell](https://github.com/client9/misspell),
-  and [markdownlint-cli](https://github.com/igorshubovych/markdownlint-cli),
-- unit testing with
-  [race detector](https://blog.golang.org/race-detector),
-  code coverage [HTML report](https://blog.golang.org/cover)
-  and [Codecov report](https://codecov.io/),
-- releasing using [GoReleaser](https://github.com/goreleaser/goreleaser),
-- dependencies scanning and updating thanks to [Renovate](https://github.com/renovatebot/renovate), configured via the [Renovate GitHub App](https://github.com/apps/renovate),
-- security code analysis using [CodeQL Action](https://docs.github.com/en/github/finding-security-vulnerabilities-and-errors-in-your-code/about-code-scanning),
-  and [govulncheck](https://pkg.go.dev/golang.org/x/vuln/cmd/govulncheck),
-- [Visual Studio Code](https://code.visualstudio.com) configuration with [Go](https://code.visualstudio.com/docs/languages/go) support.
+---
 
-## Usage
+## ⚙️ Configuration Structure (`config.yaml`)
 
-1. Sign up on [Codecov](https://codecov.io/) and configure
-   [Codecov GitHub Application](https://github.com/apps/codecov).
-2. Click the `Use this template` button (alt. clone or download this repository).
-3. Replace all occurrences of `golang-templates/seed` to `your_org/repo_name` in all files.
-4. Replace all occurrences of `seed` to `repo_name` in [Dockerfile](Dockerfile).
-5. Follow [these](https://docs.codecov.com/docs/adding-the-codecov-token#github-actions)
-   instructions to add the `CODECOV_TOKEN` as a GitHub Actions secret.
-6. Update the following files:
-   - [CHANGELOG.md](CHANGELOG.md)
-   - [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)
-   - [LICENSE](LICENSE)
-   - [README.md](README.md)
+The configuration file is structured cleanly around network **`listeners:`** and global **`acme:`** settings.
 
-## Setup
+### Example Configuration
 
-Below you can find sample instructions on how to set up the development environment.
-Of course, you can use other tools like [GoLand](https://www.jetbrains.com/go/),
-[Vim](https://github.com/fatih/vim-go), [Emacs](https://github.com/dominikh/go-mode.el).
-However, take notice that the Visual Studio Go extension is
-[officially supported](https://blog.golang.org/vscode-go) by the Go team.
+```yaml
+# Global default SOCKS5 proxy for connecting to upstream backends.
+# Can be overridden per listener or per individual route.
+default_upstream_socks5_proxy: "" # e.g., "socks5://127.0.0.1:1080"
 
-1. Install [Go](https://golang.org/doc/install).
-2. Install [Visual Studio Code](https://code.visualstudio.com/).
-3. Install [Go extension](https://code.visualstudio.com/docs/languages/go).
-4. Clone and open this repository.
-5. `F1` -> `Go: Install/Update Tools` -> (select all) -> OK.
+listeners:
+  # HTTP Listener (Port 80) - Redirects traffic to HTTPS
+  - name: "http-listener"
+    address: "0.0.0.0:80"
+    protocol: "http"
+    redirect_to_https: true
+    routes:
+      - host: "example.com"
+        path_prefix: "/"
+        upstream: "http://127.0.0.1:8080"
 
-## Build
+  # HTTPS Listener (Port 443) - Reverse Proxy with Automated ACME Wildcard TLS
+  - name: "https-listener"
+    address: "0.0.0.0:443"
+    protocol: "https"
+    # Optional listener-level SOCKS5 proxy for all routes under this listener
+    upstream_socks5_proxy: ""
+    tls:
+      enabled: true
+      use_acme: true
+      domains:
+        - "example.com"
+        - "*.example.com"
+        - "cdn.example.org"
+        - "*.cdn.example.org"
+    routes:
+      # Route 1: Exact host matching to main application
+      - host: "example.com"
+        path_prefix: "/"
+        upstream: "http://127.0.0.1:8080"
+        strip_prefix: false
+        timeout: 30s
+        custom_headers:
+          X-Proxy-Engine: "Go-Advanced-Proxy"
 
-### Terminal
+      # Route 2: API endpoint with path stripping
+      - host: "api.example.com"
+        path_prefix: "/v1"
+        upstream: "http://127.0.0.1:3000"
+        strip_prefix: false
 
-- `make` - execute the build pipeline.
-- `make help` - print help for the [Make targets](Makefile).
+      # Route 3: Wildcard subdomain routing via SOCKS5 Upstream Proxy
+      - host: "*.example.com"
+        path_prefix: "/"
+        upstream: "http://10.0.0.10:8081"
+        # Route-level SOCKS5 tunnel: establishes TCP connection to 10.0.0.10:8081 via SOCKS5
+        upstream_socks5_proxy: "socks5://user:pass@127.0.0.1:1080"
 
-### Visual Studio Code
+# Global ACME Let's Encrypt Configuration
+acme:
+  email: "admin@example.com"
+  directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+  
+  # Route Let's Encrypt requests through SOCKS5 proxy (leave empty for direct connection)
+  socks5_proxy: "socks5://127.0.0.1:1080"
+  
+  storage_path: "./acme_storage"
+  renew_before_days: 30
+  check_interval_hours: 24
 
-`F1` → `Tasks: Run Build Task (Ctrl+Shift+B or ⇧⌘B)` to execute the build pipeline.
+  # DNS-01 Challenge Provider Configuration for Wildcard Certificates
+  dns_provider:
+    # Supported providers: "arvancloud" or "cloudflare"
+    name: "cloudflare"       # Switch between providers easily
+    use_socks5: true         # Also route DNS API requests via socks5_proxy
 
-## Release
+    # 1. ArvanCloud Configuration
+    arvancloud:
+      api_key: "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # Or ARVANCLOUD_API_KEY env var
+      propagation_timeout: 120
+      polling_interval: 2
+      ttl: 600
 
-The release workflow is triggered each time a tag with `v` prefix is pushed.
+    # 2. Cloudflare Configuration
+    cloudflare:
+      # Recommended: Scoped API Token with Zone:Read and DNS:Edit permissions
+      # Can also be provided via CLOUDFLARE_DNS_API_TOKEN environment variable
+      api_token: "your_cloudflare_dns_api_token_here"
+      zone_token: ""           # Optional if permissions are split across tokens
+      
+      # Legacy Authentication (Use ONLY if api_token above is empty)
+      auth_email: ""           # Or CLOUDFLARE_EMAIL env var
+      auth_key: ""             # Or CLOUDFLARE_API_KEY env var
 
-_CAUTION_: Make sure to understand the consequences before you bump the major version.
-More info: [Go Wiki](https://github.com/golang/go/wiki/Modules#releasing-modules-v2-or-higher),
-[Go Blog](https://blog.golang.org/v2-go-modules).
+      propagation_timeout: 120
+      polling_interval: 2
+      ttl: 300
+```
 
-## Maintenance
+---
 
-Notable files:
+## 🔐 How SOCKS5 Reverse Proxy Tunneling Works
 
-- [.github/workflows](.github/workflows) - GitHub Actions workflows,
-- [renovate.json](renovate.json) - Renovate configuration,
-- [.vscode](.vscode) - Visual Studio Code configuration files,
-- [.golangci.yml](.golangci.yml) - golangci-lint configuration,
-- [.goreleaser.yml](.goreleaser.yml) - GoReleaser configuration,
-- [Dockerfile](Dockerfile) - Dockerfile used by GoReleaser to create a container image,
-- [Makefile](Makefile) - Make targets used for development, [CI build](.github/workflows) and [.vscode/tasks.json](.vscode/tasks.json),
+When `upstream_socks5_proxy` is specified on a route, listener, or globally:
+1. The proxy engine parses the URL (`socks5://user:password@host:port`) and creates an explicit SOCKS5 socket dialer via `golang.org/x/net/proxy`.
+2. The reverse proxy's custom `http.Transport` overrides its `DialContext` with the SOCKS5 dialer and disables standard HTTP proxy headers (`transport.Proxy = nil`).
+3. When an incoming request (HTTP/1.1, HTTP/2, or WebSocket upgrade) matches the route, Go connects directly to your SOCKS5 server, authenticates, and requests a TCP stream to your target upstream address (`http://10.0.0.10:8081`).
+4. Traffic flows seamlessly through the encrypted/tunneled SOCKS5 connection.
 
-## FAQ
+---
 
-### Why Visual Studio Code editor configuration
+## 🔐 How Wildcard Certificate Generation Works
 
-Developers that use Visual Studio Code can take advantage of the editor configuration.
-While others do not have to care about it.
-Setting configs for each repo is unnecessary time consuming.
-VS Code is the most popular Go editor ([survey](https://blog.golang.org/survey2019-results))
-and it is officially [supported by the Go team](https://blog.golang.org/vscode-go).
+To issue a wildcard certificate (`*.example.com`), Let's Encrypt requires domain verification via the **DNS-01 challenge**.
 
-You can always remove the [.vscode](.vscode) directory if it really does not help you.
+1. **Challenge Initialization**: When requesting a certificate for `*.example.com`, Let's Encrypt issues a DNS challenge token.
+2. **TXT Record Creation**: The server uses either the Cloudflare API (`https://api.cloudflare.com/client/v4/zones/.../dns_records`) or ArvanCloud API (`https://napi.arvancloud.ir/...`) to create a DNS TXT record at `_acme-challenge.example.com`.
+3. **SOCKS5 Proxy Routing**: If `acme.dns_provider.use_socks5` is enabled, all DNS provider API calls are tunneled through `acme.socks5_proxy`.
+4. **Propagation Verification**: The server queries public recursive DNS resolvers (`8.8.8.8:53` and `1.1.1.1:53`) every `polling_interval` seconds until the TXT record propagates globally.
+5. **Challenge Finalization**: Once verified, Let's Encrypt issues the TLS certificate bundle. The server downloads the certificates over SOCKS5, persists them to `./acme_storage/certs/`, loads them into active memory, and cleans up the DNS TXT record.
 
-### Why GitHub Actions, not any other CI server
+---
 
-GitHub Actions is out-of-the-box if you are already using GitHub.
-[GitHub Actions for Go guide](https://github.com/mvdan/github-actions-golang) explains how to use it for Go.
+## 🚀 Building & Running
 
-However, changing to any other CI server should be very simple,
-because this repository has build logic and tooling installation in [Makefile](Makefile).
+### 1. Local Development (Using Go / Makefile)
 
-### How can I build on Windows
+```bash
+# Tidy modules and download dependencies
+make tidy
 
-Install [tdm-gcc](https://jmeubank.github.io/tdm-gcc/)
-and copy `C:\TDM-GCC-64\bin\mingw32-make.exe`
-to `C:\TDM-GCC-64\bin\make.exe`.
-Alternatively, you may install [mingw-w64](http://mingw-w64.org/doku.php)
-and copy `mingw32-make.exe` accordingly.
+# Build the executable
+make build
 
-Take a look at [this workaround](https://github.com/docker-archive/toolbox/issues/673#issuecomment-355275054),
-if you have problems using Docker in Git Bash.
+# Validate your configuration YAML
+make validate
 
-You can also use [WSL (Windows Subsystem for Linux)](https://docs.microsoft.com/en-us/windows/wsl/install-win10)
-or develop inside a [Remote Container](https://code.visualstudio.com/docs/remote/containers).
-However, take into consideration that then you are not going to use "bare-metal" Windows.
+# Run the reverse proxy
+make run
+```
 
-Consider using [goyek](https://github.com/goyek/goyek)
-for creating cross-platform build pipelines in Go.
+### 2. Running with Docker
 
-### How can I customize the release
+Build the Docker image:
+```bash
+make docker-build
+```
 
-Take a look at GoReleaser [docs](https://goreleaser.com/customization/)
-as well as [its repo](https://github.com/goreleaser/goreleaser/)
-how it is dogfooding its functionality.
-You can use it to add deb/rpm/snap packages, Homebrew Tap, Scoop App Manifest etc.
+Run the container (example with Cloudflare API Token):
+```bash
+docker run -d \
+  --name edged \
+  --restart unless-stopped \
+  -p 80:80 \
+  -p 443:443 \
+  -v $(pwd)/config.yaml:/app/config.yaml:ro \
+  -v $(pwd)/acme_storage:/app/acme_storage \
+  -e CLOUDFLARE_DNS_API_TOKEN="your_cloudflare_token_here" \
+  arvan-acme-proxy:latest
+```
 
-If you are developing a library and you like handcrafted changelog and release notes,
-you are free to remove any usage of GoReleaser.
+---
 
-## Contributing
+## 🛠️ Environment Variable Overrides
 
-Feel free to create an issue or propose a pull request.
+You can keep sensitive API tokens out of your YAML file by setting these environment variables:
 
-Follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+| Environment Variable | Provider | Description |
+| :--- | :--- | :--- |
+| `ARVANCLOUD_API_KEY` | ArvanCloud | Format: `"Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"` |
+| `CLOUDFLARE_DNS_API_TOKEN` | Cloudflare | Scoped API token with `DNS:Edit` and `Zone:Read` permissions |
+| `CLOUDFLARE_ZONE_API_TOKEN` | Cloudflare | Scoped zone token (if permissions are split across two tokens) |
+| `CLOUDFLARE_EMAIL` | Cloudflare | Legacy account email address (used with `CLOUDFLARE_API_KEY`) |
+| `CLOUDFLARE_API_KEY` | Cloudflare | Legacy global API key |
