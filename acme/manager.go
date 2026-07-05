@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fmotalleb/go-tools/constants"
 	"github.com/fmotalleb/go-tools/log"
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
@@ -107,7 +108,7 @@ func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
 	legoCfg.Certificate.KeyType = certcrypto.RSA2048
 	legoCfg.HTTPClient = &http.Client{
 		Transport: m.transport,
-		Timeout:   45 * time.Second,
+		Timeout:   cfg.ClientTimeout,
 	}
 
 	client, err := lego.NewClient(legoCfg)
@@ -141,7 +142,7 @@ func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
 				logger.Info("Routing ArvanCloud DNS API requests via SOCKS5 proxy")
 				arvConfig.HTTPClient = &http.Client{
 					Transport: m.transport,
-					Timeout:   30 * time.Second,
+					Timeout:   cfg.ClientTimeout,
 				}
 			}
 
@@ -182,7 +183,7 @@ func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
 			logger.Info("Routing Cloudflare DNS API requests via SOCKS5 proxy")
 			cfConfig.HTTPClient = &http.Client{
 				Transport: m.transport,
-				Timeout:   30 * time.Second,
+				Timeout:   cfg.ClientTimeout,
 			}
 		}
 
@@ -327,14 +328,14 @@ func (m *Manager) obtainCertificate(ctx context.Context, domains []string) error
 	certPath := filepath.Join(m.cfg.StoragePath, "certs", primaryDomain+".crt")
 	keyPath := filepath.Join(m.cfg.StoragePath, "certs", primaryDomain+".key")
 
-	if err := os.WriteFile(certPath, certificates.Certificate, 0o600); err != nil {
+	if err = os.WriteFile(certPath, certificates.Certificate, 0o600); err != nil {
 		return fmt.Errorf("failed to save cert to disk: %w", err)
 	}
-	if err := os.WriteFile(keyPath, certificates.PrivateKey, 0o600); err != nil {
+	if err = os.WriteFile(keyPath, certificates.PrivateKey, 0o600); err != nil {
 		return fmt.Errorf("failed to save key to disk: %w", err)
 	}
-
-	tlsCert, err := tls.X509KeyPair(certificates.Certificate, certificates.PrivateKey)
+	var tlsCert tls.Certificate
+	tlsCert, err = tls.X509KeyPair(certificates.Certificate, certificates.PrivateKey)
 	if err != nil {
 		return fmt.Errorf("failed to parse X509 key pair: %w", err)
 	}
@@ -365,7 +366,7 @@ func (m *Manager) obtainCertificate(ctx context.Context, domains []string) error
 func (m *Manager) StartRenewalDaemon(ctx context.Context, domains []string) {
 	interval := time.Duration(m.cfg.CheckIntervalHours) * time.Hour
 	if interval <= 0 {
-		interval = 24 * time.Hour
+		interval = constants.Day
 	}
 
 	logger := log.FromContext(ctx)

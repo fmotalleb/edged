@@ -79,6 +79,7 @@ type ACMEConfig struct {
 	StoragePath        string            `yaml:"storage_path" mapstructure:"storage_path" default:"./acme_storage"`
 	RenewBeforeDays    int               `yaml:"renew_before_days" mapstructure:"renew_before_days" default:"30"`
 	CheckIntervalHours int               `yaml:"check_interval_hours" mapstructure:"check_interval_hours" default:"24"`
+	ClientTimeout      time.Duration     `yaml:"client_timeout" mapstructure:"client_timeout" default:"40s"`
 	DNSProvider        DNSProviderConfig `yaml:"dns_provider" mapstructure:"dns_provider"`
 }
 
@@ -126,17 +127,17 @@ func Load(ctx context.Context, path string) (*Config, error) {
 		if readErr != nil {
 			return nil, fmt.Errorf("failed to read config file %s: %w", path, readErr)
 		}
-		if err := yaml.Unmarshal(data, &cfg); err != nil {
+		if err = yaml.Unmarshal(data, &cfg); err != nil {
 			return nil, fmt.Errorf("failed to parse config: %w", err)
 		}
 	}
 	if err = decoder.Decode(&cfg, cfgMap); err != nil {
 		return nil, fmt.Errorf("failed to parse config object: %w", err)
 	}
-	if err := cfg.setDefaults(ctx); err != nil {
+	if err = cfg.setDefaults(ctx); err != nil {
 		return nil, fmt.Errorf("failed to apply configuration defaults: %w", err)
 	}
-	if err := cfg.validate(ctx); err != nil {
+	if err = cfg.validate(ctx); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 
