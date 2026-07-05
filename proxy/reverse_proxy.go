@@ -92,7 +92,7 @@ func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes [
 		proxyHandler := httputil.NewSingleHostReverseProxy(targetURL)
 		proxyHandler.Transport = transport
 		proxyHandler.ErrorHandler = r.createErrorHandler(rc)
-		proxyHandler.Director = r.createDirector(targetURL, rc, proxyHandler.Director)
+		proxyHandler.Rewrite = r.createDirector(targetURL, rc, proxyHandler.Director)
 
 		r.routes = append(r.routes, routeEntry{
 			config:  rc,
@@ -169,37 +169,37 @@ func (r *ProxyRouter) matchHost(requestHost, routeHost string) bool {
 }
 
 // createDirector wraps the default Director to inject custom headers and strip prefixes.
-func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig, defaultDirector func(*http.Request)) func(*http.Request) {
-	return func(req *http.Request) {
-		defaultDirector(req)
+func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig, defaultDirector func(*http.Request)) func(*httputil.ProxyRequest) {
+	return func(pr *httputil.ProxyRequest) {
+		// SetURL is the Rewrite-era replacement for calling the legacy Director;
+		// it sets scheme/host/path/rawquery on pr.Out correctly.
+		pr.SetURL(target)
 
-		// Set standard forwarding headers
-		req.Header.Set("X-Forwarded-Proto", r.protocol)
-		if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-			if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
-				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+		out := pr.Out // <-- mutate this, not pr.In
+
+		out.Header.Set("X-Forwarded-Proto", r.protocol)
+		if clientIP, _, err := net.SplitHostPort(pr.In.RemoteAddr); err == nil {
+			if prior := pr.In.Header.Get("X-Forwarded-For"); prior != "" {
+				out.Header.Set("X-Forwarded-For", prior+", "+clientIP)
 			} else {
-				req.Header.Set("X-Forwarded-For", clientIP)
+				out.Header.Set("X-Forwarded-For", clientIP)
 			}
-			req.Header.Set("X-Real-IP", clientIP)
+			out.Header.Set("X-Real-IP", clientIP)
 		}
 
-		// Inject custom headers from configuration
 		for k, v := range rc.CustomHeaders {
-			req.Header.Set(k, v)
+			out.Header.Set(k, v)
 		}
 
-		// Strip path prefix if requested
 		if rc.StripPrefix && rc.PathPrefix != "/" && rc.PathPrefix != "" {
-			req.URL.Path = strings.TrimPrefix(req.URL.Path, rc.PathPrefix)
-			if !strings.HasPrefix(req.URL.Path, "/") {
-				req.URL.Path = "/" + req.URL.Path
+			out.URL.Path = strings.TrimPrefix(out.URL.Path, rc.PathPrefix)
+			if !strings.HasPrefix(out.URL.Path, "/") {
+				out.URL.Path = "/" + out.URL.Path
 			}
-			req.URL.RawPath = ""
+			out.URL.RawPath = ""
 		}
 
-		// Preserve target host header or override
-		req.Host = target.Host
+		out.Host = target.Host
 	}
 }
 

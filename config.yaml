@@ -90,9 +90,6 @@ acme:
 
   # Directory path where ACME account keys and certificates will be stored on disk
   storage_path: "./acme_storage"
-  recursive_nameservers:
-    - 217.218.155.155
-    - 217.218.127.127
   # Automatic renewal settings
   renew_before_days: 30      # Renew certificates when less than 30 days remain
   check_interval_hours: 24   # How often to check for expiring certificates
@@ -102,7 +99,9 @@ acme:
     # Supported providers: "arvancloud", "cloudflare"
     name: "arvancloud"       # Switch between "arvancloud" or "cloudflare"
     use_socks5: false         # If true, DNS API calls will also be tunneled through socks5_proxy
-
+    recursive_nameservers:
+      - 217.218.155.155:53
+      - 217.218.127.127:53
     # --------------------------------------------------------------------------
     # 1. ArvanCloud DNS Provider Configuration
     # --------------------------------------------------------------------------
