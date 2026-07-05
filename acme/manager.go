@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,13 +20,8 @@ import (
 
 	"github.com/fmotalleb/go-tools/constants"
 	"github.com/fmotalleb/go-tools/log"
-	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
-	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
-	"github.com/go-acme/lego/v4/providers/dns/arvancloud"
-	"github.com/go-acme/lego/v4/providers/dns/cloudflare"
-	"github.com/go-acme/lego/v4/registration"
 	"go.uber.org/zap"
 
 	"github.com/fmotalleb/edged/config"
@@ -45,181 +39,6 @@ type Manager struct {
 	mu        sync.RWMutex
 	obtainMu  sync.Mutex // Mutex to prevent duplicate concurrent obtain requests
 	transport *http.Transport
-}
-
-// NewManager initializes the ACME manager, configuring SOCKS5 proxy and DNS challenge providers.
-func NewManager(ctx context.Context, cfg config.ACMEConfig) (*Manager, error) {
-	logger := log.FromContext(ctx)
-	m := &Manager{
-		cfg:      cfg,
-		certs:    make(map[string]*tls.Certificate),
-		certMeta: make(map[string]time.Time),
-	}
-
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "accounts"), 0o700); err != nil {
-		return nil, fmt.Errorf("failed to create storage dir: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "certs"), 0o700); err != nil {
-		return nil, fmt.Errorf("failed to create certs dir: %w", err)
-	}
-
-	// 1. Configure SOCKS5 Proxy Transport if specified
-	if cfg.SOCKS5Proxy != "" {
-		proxyURL, err := url.Parse(cfg.SOCKS5Proxy)
-		if err != nil {
-			return nil, fmt.Errorf("invalid socks5_proxy URL '%s': %w", cfg.SOCKS5Proxy, err)
-		}
-		logger.Info("Configuring Let's Encrypt HTTP client to use SOCKS5 proxy", zap.String("proxy", cfg.SOCKS5Proxy))
-		m.transport = &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-		}
-	} else {
-		m.transport = &http.Transport{
-			TLSClientConfig: &tls.Config{
-				MinVersion: tls.VersionTLS12,
-			},
-		}
-	}
-
-	// 2. Load or create user account private key
-	accountKeyPath := filepath.Join(cfg.StoragePath, "accounts", "private.key")
-	accountKey, err := loadOrCreatePrivateKey(accountKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to manage account private key: %w", err)
-	}
-
-	// 3. Load or initialize User registration
-	userPath := filepath.Join(cfg.StoragePath, "accounts", "user.json")
-	user, err := loadUser(userPath, accountKey)
-	if err != nil {
-		user = &User{
-			Email: cfg.Email,
-			key:   accountKey,
-		}
-	}
-	m.user = user
-
-	// 4. Create Lego configuration
-	legoCfg := lego.NewConfig(user)
-	legoCfg.CADirURL = cfg.DirectoryURL
-	legoCfg.Certificate.KeyType = certcrypto.RSA2048
-	legoCfg.HTTPClient = &http.Client{
-		Transport: m.transport,
-		Timeout:   cfg.ClientTimeout,
-	}
-
-	client, err := lego.NewClient(legoCfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create lego client: %w", err)
-	}
-	m.client = client
-
-	// 5. Setup DNS-01 Provider (ArvanCloud or Cloudflare) for wildcard certificate support
-	providerName := strings.ToLower(strings.TrimSpace(cfg.DNSProvider.Name))
-	recursiveServers := cfg.DNSProvider.RecursiveNameservers
-	if len(recursiveServers) == 0 {
-		recursiveServers = defaultRecursiveNS
-	}
-	switch providerName {
-	case "arvancloud":
-		if cfg.DNSProvider.ArvanCloud.APIKey != "" {
-			logger.Info("Configuring ArvanCloud DNS-01 challenge provider...")
-			arvConfig := arvancloud.NewDefaultConfig()
-			arvConfig.APIKey = cfg.DNSProvider.ArvanCloud.APIKey
-			if cfg.DNSProvider.ArvanCloud.PropagationTimeout > 0 {
-				arvConfig.PropagationTimeout = time.Duration(cfg.DNSProvider.ArvanCloud.PropagationTimeout) * time.Second
-			}
-			if cfg.DNSProvider.ArvanCloud.PollingInterval > 0 {
-				arvConfig.PollingInterval = time.Duration(cfg.DNSProvider.ArvanCloud.PollingInterval) * time.Second
-			}
-			if cfg.DNSProvider.ArvanCloud.TTL > 0 {
-				arvConfig.TTL = cfg.DNSProvider.ArvanCloud.TTL
-			}
-			if cfg.DNSProvider.UseSOCKS5 && m.transport != nil {
-				logger.Info("Routing ArvanCloud DNS API requests via SOCKS5 proxy")
-				arvConfig.HTTPClient = &http.Client{
-					Transport: m.transport,
-					Timeout:   cfg.ClientTimeout,
-				}
-			}
-
-			provider, err := arvancloud.NewDNSProviderConfig(arvConfig)
-			if err != nil {
-				return nil, fmt.Errorf("failed to initialize ArvanCloud DNS provider: %w", err)
-			}
-
-			err = client.Challenge.SetDNS01Provider(provider,
-				dns01.AddRecursiveNameservers(
-					dns01.ParseNameservers(recursiveServers),
-				),
-			)
-			if err != nil {
-				return nil, fmt.Errorf("failed to set ArvanCloud DNS-01 provider: %w", err)
-			}
-		}
-	case "cloudflare":
-		logger.Info("Configuring Cloudflare DNS-01 challenge provider...")
-		cfConfig := cloudflare.NewDefaultConfig()
-		if cfg.DNSProvider.Cloudflare.APIToken != "" {
-			cfConfig.AuthToken = cfg.DNSProvider.Cloudflare.APIToken
-			cfConfig.ZoneToken = cfg.DNSProvider.Cloudflare.ZoneToken
-		} else {
-			cfConfig.AuthEmail = cfg.DNSProvider.Cloudflare.AuthEmail
-			cfConfig.AuthKey = cfg.DNSProvider.Cloudflare.AuthKey
-		}
-		if cfg.DNSProvider.Cloudflare.PropagationTimeout > 0 {
-			cfConfig.PropagationTimeout = time.Duration(cfg.DNSProvider.Cloudflare.PropagationTimeout) * time.Second
-		}
-		if cfg.DNSProvider.Cloudflare.PollingInterval > 0 {
-			cfConfig.PollingInterval = time.Duration(cfg.DNSProvider.Cloudflare.PollingInterval) * time.Second
-		}
-		if cfg.DNSProvider.Cloudflare.TTL > 0 {
-			cfConfig.TTL = cfg.DNSProvider.Cloudflare.TTL
-		}
-		if cfg.DNSProvider.UseSOCKS5 && m.transport != nil {
-			logger.Info("Routing Cloudflare DNS API requests via SOCKS5 proxy")
-			cfConfig.HTTPClient = &http.Client{
-				Transport: m.transport,
-				Timeout:   cfg.ClientTimeout,
-			}
-		}
-
-		provider, err := cloudflare.NewDNSProviderConfig(cfConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to initialize Cloudflare DNS provider: %w", err)
-		}
-
-		err = client.Challenge.SetDNS01Provider(provider,
-			dns01.AddRecursiveNameservers(dns01.ParseNameservers(recursiveServers)),
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to set Cloudflare DNS-01 provider: %w", err)
-		}
-	}
-
-	// 6. Register ACME Account if not registered yet
-	if user.Registration == nil {
-		logger.Info("Registering new ACME account", zap.String("email", cfg.Email))
-		reg, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
-		if err != nil {
-			return nil, fmt.Errorf("failed to register ACME account: %w", err)
-		}
-		user.Registration = reg
-		if err := saveUser(userPath, user); err != nil {
-			logger.Warn("Failed to save account registration to disk", zap.Error(err))
-		}
-		logger.Info("ACME Account registered successfully", zap.String("uri", reg.URI))
-	}
-
-	// 7. Load existing certificates from disk into memory
-	if err := m.loadCertificatesFromDisk(ctx); err != nil {
-		logger.Warn("Warning during loading certificates from disk", zap.Error(err))
-	}
-
-	return m, nil
 }
 
 // GetCertificate is the callback for tls.Config.GetCertificate during TLS handshakes.

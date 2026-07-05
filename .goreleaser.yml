@@ -10,27 +10,41 @@ builds:
       - darwin
       - linux
       - windows
+    ldflags:
+      - "-s"
+      - "-w"
+      - "-X github.com/fmotalleb/go-tools/git.Version={{.Version}}"
+      - "-X github.com/fmotalleb/go-tools/git.Commit={{.ShortCommit}}"
+      - "-X github.com/fmotalleb/go-tools/git.Date={{.Date}}"
+      - "-X github.com/fmotalleb/go-tools/git.Branch={{.Branch}}"
     goarch:
       - amd64
-archives:
-  - format_overrides:
-      - goos: windows
-        formats: 
-          - zip
-dockers:
-  - image_templates:
-    - "ghcr.io/fmotalleb/edged:latest"
-    - "ghcr.io/fmotalleb/edged:{{ .Major }}"
-    - "ghcr.io/fmotalleb/edged:{{ .Major }}.{{ .Minor }}"
-    - "ghcr.io/fmotalleb/edged:{{ .Major }}.{{ .Minor }}.{{ .Patch }}"
-    build_flag_templates:
-    - "--pull"
-    # OCI annotations: https://github.com/opencontainers/image-spec/blob/main/annotations.md
-    - "--label=org.opencontainers.image.created={{.Date}}"
-    - "--label=org.opencontainers.image.name={{.ProjectName}}"
-    - "--label=org.opencontainers.image.revision={{.FullCommit}}"
-    - "--label=org.opencontainers.image.version={{.Version}}"
-    - "--label=org.opencontainers.image.source={{.GitURL}}"
+      - arm64
+
+
+dockers_v2:
+  - id: edged
+    sbom: false
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    images:
+      - ghcr.io/fmotalleb/edged
+    tags:
+      - "ghcr.io/fmotalleb/edged:latest"
+      - "ghcr.io/fmotalleb/edged:{{ .Major }}"
+      - "ghcr.io/fmotalleb/edged:{{ .Major }}.{{ .Minor }}"
+      - "ghcr.io/fmotalleb/edged:{{ .Major }}.{{ .Minor }}.{{ .Patch }}"
+    labels:
+      "org.opencontainers.image.description": "Junction"
+      "org.opencontainers.image.created": "{{.Date}}"
+      "org.opencontainers.image.name": "{{.ProjectName}}"
+      "org.opencontainers.image.revision": "{{.FullCommit}}"
+      "org.opencontainers.image.version": "{{.Version}}"
+      "org.opencontainers.image.source": "{{.GitURL}}"
+    ids:
+      - default
+
 release:
   github:
   name_template: "{{.Version}}"

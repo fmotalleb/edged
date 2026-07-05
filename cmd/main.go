@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fmotalleb/go-tools/git"
 	"github.com/fmotalleb/go-tools/log"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -29,6 +30,7 @@ var rootCmd = &cobra.Command{
 	Long: `edged is a high-performance Golang reverse proxy that provides automated TLS handling
 via Let's Encrypt (ACME v2), comprehensive SOCKS5 proxy tunneling across all layers, and
 first-class integration with ArvanCloud and Cloudflare for wildcard certificate generation.`,
+	Version: git.String(),
 	PersistentPreRun: func(_ *cobra.Command, _ []string) {
 		if verbose {
 			log.SetDebugDefaults()
@@ -72,7 +74,10 @@ func runServer(ctx context.Context) error {
 	acmeDomains := cfg.GetAllACMEDomains()
 	if len(acmeDomains) > 0 {
 		logger.Info("Initializing ACME Let's Encrypt Manager", zap.Strings("domains", acmeDomains))
-		acmeMgr, err = acme.NewManager(ctx, cfg.ACME)
+		acmeMgr, err = acme.NewManager(
+			ctx,
+			acme.WithConfig(cfg.ACME),
+		)
 		if err != nil {
 			logger.Fatal("Failed to initialize ACME Manager", zap.Error(err))
 			return err
