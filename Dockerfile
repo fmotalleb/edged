@@ -1,3 +1,4 @@
 FROM scratch
-COPY edged /
+ARG TARGETPLATFORM
+COPY $TARGETPLATFORM/edged /
 ENTRYPOINT ["/edged"]
