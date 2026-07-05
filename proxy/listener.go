@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -65,6 +66,9 @@ func (s *Server) Start(ctx context.Context) error {
 			ReadTimeout:  15 * time.Second,
 			WriteTimeout: 60 * time.Second,
 			IdleTimeout:  120 * time.Second,
+			BaseContext: func(_ net.Listener) context.Context {
+				return ctx
+			},
 		}
 
 		if l.Protocol == "https" {
