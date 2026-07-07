@@ -23,7 +23,7 @@ builds:
 
 dockers_v2:
   - id: edged
-    sbom: true
+    sbom: false
     platforms:
       - linux/amd64
     images:
