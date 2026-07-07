@@ -21,20 +21,18 @@ builds:
       - amd64
       - arm64
 
-
 dockers_v2:
   - id: edged
-    sbom: false
+    sbom: true
     platforms:
       - linux/amd64
-      - linux/arm64
     images:
       - ghcr.io/fmotalleb/edged
     tags:
-      - "ghcr.io/fmotalleb/edged:latest"
-      - "ghcr.io/fmotalleb/edged:{{ .Major }}"
-      - "ghcr.io/fmotalleb/edged:{{ .Major }}.{{ .Minor }}"
-      - "ghcr.io/fmotalleb/edged:{{ .Major }}.{{ .Minor }}.{{ .Patch }}"
+      - "latest"
+      - "{{ .Major }}"
+      - "{{ .Major }}.{{ .Minor }}"
+      - "{{ .Major }}.{{ .Minor }}.{{ .Patch }}"
     labels:
       "org.opencontainers.image.description": "Junction"
       "org.opencontainers.image.created": "{{.Date}}"
@@ -44,7 +42,11 @@ dockers_v2:
       "org.opencontainers.image.source": "{{.GitURL}}"
     ids:
       - default
-
+    hooks:
+      pre:
+        - cmd: ls
+          dir: "{{ .ContextDir }}"
+          
 release:
   github:
   name_template: "{{.Version}}"
