@@ -4,7 +4,8 @@ before:
   hooks:
     - go mod download
 builds:
-  - env:
+  - id: default
+    env:
       - CGO_ENABLED=0
     goos:
       - darwin
@@ -26,6 +27,7 @@ dockers_v2:
     sbom: false
     platforms:
       - linux/amd64
+      - linux/arm64
     images:
       - ghcr.io/fmotalleb/edged
     tags:
@@ -42,10 +44,6 @@ dockers_v2:
       "org.opencontainers.image.source": "{{.GitURL}}"
     ids:
       - default
-    hooks:
-      pre:
-        - cmd: ls
-          dir: "{{ .ContextDir }}"
           
 release:
   github:
