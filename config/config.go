@@ -39,6 +39,10 @@ type ListenerConfig struct {
 	UpstreamSOCKS5Proxy string        `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"`
 	TLS                 TLSConfig     `yaml:"tls" mapstructure:"tls"`
 	Routes              []RouteConfig `yaml:"routes" mapstructure:"routes"`
+
+	ReadTimeout  time.Duration `yaml:"read_timeout" mapstructure:"read_timeout" default:"15s"`
+	WriteTimeout time.Duration `yaml:"write_timeout" mapstructure:"write_timeout" default:"60s"`
+	IdleTimeout  time.Duration `yaml:"idle_timeout" mapstructure:"idle_timeout" default:"12s"`
 }
 
 // TLSConfig defines TLS settings for a listener.

@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fmotalleb/go-tools/log"
 	"go.uber.org/zap"
@@ -63,9 +62,9 @@ func (s *Server) Start(ctx context.Context) error {
 		srv := &http.Server{
 			Addr:         l.Address,
 			Handler:      handler,
-			ReadTimeout:  15 * time.Second,
-			WriteTimeout: 60 * time.Second,
-			IdleTimeout:  120 * time.Second,
+			ReadTimeout:  l.ReadTimeout,
+			WriteTimeout: l.WriteTimeout,
+			IdleTimeout:  l.IdleTimeout,
 			BaseContext: func(_ net.Listener) context.Context {
 				return ctx
 			},
