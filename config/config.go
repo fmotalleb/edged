@@ -58,6 +58,7 @@ type RouteConfig struct {
 	StripPrefix   bool              `yaml:"strip_prefix" mapstructure:"strip_prefix"` // If true, strips PathPrefix before forwarding
 	Timeout       time.Duration     `yaml:"timeout" mapstructure:"timeout" default:"30s"`
 	CustomHeaders map[string]string `yaml:"custom_headers" mapstructure:"custom_headers"` // Headers to inject before sending to upstream
+	Debug         bool              `yaml:"debug" mapstructure:"debug" env:"DEBUG"`
 	// UpstreamSOCKS5Proxy is inherited Listener -> Route; resolved manually
 	// in setDefaults for the same reason as ListenerConfig.UpstreamSOCKS5Proxy.
 	UpstreamSOCKS5Proxy string `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"`

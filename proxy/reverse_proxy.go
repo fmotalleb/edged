@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -258,7 +259,28 @@ func (r *ProxyRouter) createErrorHandler(rc config.RouteConfig) func(http.Respon
 			zap.String("socks5_proxy", rc.UpstreamSOCKS5Proxy),
 			zap.Error(err))
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Error-Source", "edge")
 		w.WriteHeader(http.StatusBadGateway)
-		fmt.Fprintf(w, `{"error": "502 Bad Gateway", "message": "Failed to reach upstream service", "upstream": "%s", "socks5_proxy": "%s"}`, rc.Upstream, rc.UpstreamSOCKS5Proxy)
+		errResponse := map[string]any{
+			"error":   "502 Bad Gateway",
+			"message": "Failed to reach upstream service",
+			"client":  strings.Split(req.RemoteAddr, ":")[0],
+		}
+		if rc.Debug {
+			errResponse["upstream"] = rc.Upstream
+			if rc.UpstreamSOCKS5Proxy != "" {
+				errResponse["socks5_proxy"] = rc.UpstreamSOCKS5Proxy
+			} else {
+				errResponse["socks5_proxy"] = "none"
+			}
+		}
+		body, err := json.Marshal(errResponse)
+		if err != nil {
+			logger.Warn("Failed to marshal upstream error response", zap.Error(err))
+			fmt.Fprint(w, "Server Error!")
+		}
+		if _, err = w.Write(body); err != nil {
+			logger.Warn("Failed to write error response to user", zap.Error(err))
+		}
 	}
 }
