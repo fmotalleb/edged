@@ -265,6 +265,7 @@ func (m *Manager) loadCertificatesFromDisk(ctx context.Context) error {
 
 // loadOrCreatePrivateKey loads an ECDSA private key from disk or generates a new P-256 key.
 func loadOrCreatePrivateKey(path string) (crypto.PrivateKey, error) {
+	// #nosec G304 -- This variable is loaded from config.
 	if data, err := os.ReadFile(path); err == nil {
 		block, _ := pem.Decode(data)
 		if block != nil {
@@ -290,11 +291,12 @@ func loadOrCreatePrivateKey(path string) (crypto.PrivateKey, error) {
 		return nil, err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
 
 	pemBlock := &pem.Block{Type: "EC PRIVATE KEY", Bytes: der}
+	// #nosec G304 -- This variable is loaded from config.
 	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return nil, err

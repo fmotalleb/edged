@@ -24,6 +24,11 @@ import (
 	"github.com/fmotalleb/edged/config"
 )
 
+const (
+	defaultHttpTimeout    = 45 * time.Second
+	defaultDNSHTTPTimeout = 30 * time.Second
+)
+
 type ManagerOption func(*managerOptions) error
 
 type managerOptions struct {
@@ -46,8 +51,8 @@ type managerOptions struct {
 
 func defaultManagerOptions() managerOptions {
 	return managerOptions{
-		httpTimeout:          45 * time.Second,
-		dnsHTTPTimeout:       30 * time.Second,
+		httpTimeout:          defaultHttpTimeout,
+		dnsHTTPTimeout:       defaultDNSHTTPTimeout,
 		certKeyType:          certcrypto.RSA2048,
 		registerAccount:      true,
 		termsOfServiceAgreed: true,
@@ -222,18 +227,13 @@ func NewManager(ctx context.Context, opts ...ManagerOption) (*Manager, error) {
 		certMeta: make(map[string]time.Time),
 	}
 
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "accounts"), 0o700); err != nil {
-		return nil, fmt.Errorf("failed to create storage dir: %w", err)
-	}
-
-	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "certs"), 0o700); err != nil {
-		return nil, fmt.Errorf("failed to create certs dir: %w", err)
+	err := mkStorageDirs(cfg)
+	if err != nil {
+		return m, err
 	}
 
 	transport := options.transport
 	if transport == nil {
-		var err error
-
 		transport, err = newACMETransport(ctx, cfg)
 		if err != nil {
 			return nil, err
@@ -281,27 +281,15 @@ func NewManager(ctx context.Context, opts ...ManagerOption) (*Manager, error) {
 
 	m.client = client
 
-	if err := m.configureDNS01Provider(ctx, options); err != nil {
+	if err = m.configureDNS01Provider(ctx, options); err != nil {
 		return nil, err
 	}
 
 	if options.registerAccount && user.Registration == nil {
-		logger.Info("Registering new ACME account", zap.String("email", cfg.Email))
-
-		reg, err := client.Registration.Register(registration.RegisterOptions{
-			TermsOfServiceAgreed: options.termsOfServiceAgreed,
-		})
+		err = registerUser(logger, cfg, client, options, user, userPath)
 		if err != nil {
-			return nil, fmt.Errorf("failed to register ACME account: %w", err)
+			return m, err
 		}
-
-		user.Registration = reg
-
-		if err := saveUser(userPath, user); err != nil {
-			logger.Warn("Failed to save account registration to disk", zap.Error(err))
-		}
-
-		logger.Info("ACME Account registered successfully", zap.String("uri", reg.URI))
 	}
 
 	if options.loadExistingCerts {
@@ -311,6 +299,37 @@ func NewManager(ctx context.Context, opts ...ManagerOption) (*Manager, error) {
 	}
 
 	return m, nil
+}
+
+func registerUser(logger *zap.Logger, cfg config.ACMEConfig, client *lego.Client, options managerOptions, user *User, userPath string) error {
+	logger.Info("Registering new ACME account", zap.String("email", cfg.Email))
+
+	reg, err := client.Registration.Register(registration.RegisterOptions{
+		TermsOfServiceAgreed: options.termsOfServiceAgreed,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to register ACME account: %w", err)
+	}
+
+	user.Registration = reg
+
+	if err := saveUser(userPath, user); err != nil {
+		logger.Warn("Failed to save account registration to disk", zap.Error(err))
+	}
+
+	logger.Info("ACME Account registered successfully", zap.String("uri", reg.URI))
+	return nil
+}
+
+func mkStorageDirs(cfg config.ACMEConfig) error {
+	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "accounts"), 0o700); err != nil {
+		return fmt.Errorf("failed to create storage dir: %w", err)
+	}
+
+	if err := os.MkdirAll(filepath.Join(cfg.StoragePath, "certs"), 0o700); err != nil {
+		return fmt.Errorf("failed to create certs dir: %w", err)
+	}
+	return nil
 }
 
 // Optional compatibility helper if you still want config-first call sites.

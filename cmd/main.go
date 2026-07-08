@@ -36,7 +36,7 @@ first-class integration with ArvanCloud and Cloudflare for wildcard certificate 
 			log.SetDebugDefaults()
 		}
 	},
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(_ *cobra.Command, _ []string) error {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		return runServer(ctx)

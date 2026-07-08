@@ -42,6 +42,7 @@ func saveUser(path string, u *User) error {
 
 // loadUser loads account registration details from disk.
 func loadUser(path string, key crypto.PrivateKey) (*User, error) {
+	// #nosec G304 -- This variable is loaded from config.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err

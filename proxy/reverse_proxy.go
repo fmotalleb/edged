@@ -18,8 +18,8 @@ import (
 	"github.com/fmotalleb/edged/config"
 )
 
-// ProxyRouter manages routing rules and ReverseProxy instances for a listener.
-type ProxyRouter struct {
+// Router manages routing rules and ReverseProxy instances for a listener.
+type Router struct {
 	listenerName string
 	protocol     string
 	routes       []routeEntry
@@ -40,9 +40,9 @@ type routeEntry struct {
 // NewProxyRouter builds a proxy router with dedicated reverse proxies for each route.
 // ctx is the server's lifetime context; it is used both for logging during setup
 // and as the parent context for every request the router later handles.
-func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes []config.RouteConfig) (*ProxyRouter, error) {
+func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes []config.RouteConfig) (*Router, error) {
 	logger := log.FromContext(ctx)
-	r := &ProxyRouter{
+	r := &Router{
 		listenerName: listenerName,
 		protocol:     protocol,
 		baseCtx:      ctx,
@@ -90,7 +90,7 @@ func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes [
 			if contextDialer, ok := dialer.(proxy.ContextDialer); ok {
 				transport.DialContext = contextDialer.DialContext
 			} else {
-				transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+				transport.DialContext = func(_ context.Context, network, addr string) (net.Conn, error) {
 					return dialer.Dial(network, addr)
 				}
 			}
@@ -119,7 +119,7 @@ func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes [
 }
 
 // ServeHTTP handles incoming requests, matching host and path prefix to the best route.
-func (r *ProxyRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+func (r *Router) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	logger := log.FromContext(req.Context())
 	host := req.Host
 	if idx := strings.Index(host, ":"); idx != -1 {
@@ -175,7 +175,7 @@ func (r *ProxyRouter) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 // deriveContext returns a context that carries reqCtx's values/deadline but is
 // also canceled if the router's baseCtx (the server's lifetime context) is
 // canceled first - e.g. on graceful shutdown.
-func (r *ProxyRouter) deriveContext(reqCtx context.Context) (context.Context, context.CancelFunc) {
+func (r *Router) deriveContext(reqCtx context.Context) (context.Context, context.CancelFunc) {
 	if r.baseCtx == nil {
 		return reqCtx, func() {}
 	}
@@ -190,7 +190,7 @@ func (r *ProxyRouter) deriveContext(reqCtx context.Context) (context.Context, co
 }
 
 // matchHost checks exact host matching and wildcard (*.example.com) matching.
-func (r *ProxyRouter) matchHost(requestHost, routeHost string) bool {
+func (r *Router) matchHost(requestHost, routeHost string) bool {
 	routeHost = strings.ToLower(strings.TrimSpace(routeHost))
 	if routeHost == "" || routeHost == "*" || requestHost == routeHost {
 		return true
@@ -210,7 +210,7 @@ func (r *ProxyRouter) matchHost(requestHost, routeHost string) bool {
 // original request from pr.In and mutates the outbound clone pr.Out - pr.Out
 // is what actually gets sent upstream, so all header/path/host changes must
 // be applied there.
-func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig) func(*httputil.ProxyRequest) {
+func (r *Router) createDirector(target *url.URL, rc config.RouteConfig) func(*httputil.ProxyRequest) {
 	return func(pr *httputil.ProxyRequest) {
 		// Equivalent of the legacy Director: sets scheme/host and joins the
 		// target's path with the incoming request's path onto pr.Out.URL.
@@ -250,7 +250,7 @@ func (r *ProxyRouter) createDirector(target *url.URL, rc config.RouteConfig) fun
 }
 
 // createErrorHandler handles upstream connection failures and timeouts gracefully.
-func (r *ProxyRouter) createErrorHandler(rc config.RouteConfig) func(http.ResponseWriter, *http.Request, error) {
+func (r *Router) createErrorHandler(rc config.RouteConfig) func(http.ResponseWriter, *http.Request, error) {
 	return func(w http.ResponseWriter, req *http.Request, err error) {
 		logger := log.FromContext(req.Context())
 		logger.Error("Proxy forwarding error to upstream",

@@ -49,6 +49,7 @@ func (s *Server) Start(ctx context.Context) error {
 					host = host[:idx]
 				}
 				targetURL := "https://" + host + req.URL.RequestURI()
+				// #nosec G710 -- Reverse proxy intentionally redirects to the same user-requested host.
 				http.Redirect(w, req, targetURL, http.StatusMovedPermanently)
 			})
 		} else {

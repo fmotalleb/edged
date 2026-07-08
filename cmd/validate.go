@@ -13,7 +13,7 @@ import (
 var validateCmd = &cobra.Command{
 	Use:   "validate",
 	Short: "Validate configuration file syntax and structure, then exit",
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, _ []string) error {
 		logger := log.FromContext(cmd.Context())
 		logger.Info("Validating configuration file", zap.String("path", configPath))
 		_, err := config.Load(cmd.Context(), configPath)

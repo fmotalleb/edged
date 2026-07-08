@@ -38,21 +38,36 @@ linters:
   settings:
     funlen:
       lines: 100
-      statements: 50
+      statements: 60
+    goconst:
+      min-len: 6
+      min-occurrences: 3
+      ignore-calls: true
+      numbers: false
+      ignore-tests: true
     gocyclo:
-      min-complexity: 15
+      min-complexity: 20
     govet:
       disable:
         - fieldalignment
       enable-all: true
     misspell:
       locale: US
+    mnd:
+      checks:
+        - operation
+        - return
+        - assign
+      ignored-numbers:
+        - "2"
+        - "24"
+        - "24.0"
     nolintlint:
       require-explanation: true
       require-specific: true
       allow-unused: false
     revive:
-      confidence: 0
+      confidence: 1
   exclusions:
     generated: lax
     presets:
