@@ -76,6 +76,7 @@ type RouteConfig struct {
 	IdleConnTimeout       time.Duration `yaml:"idle_conn_timeout" mapstructure:"idle_conn_timeout" default:"90s"`
 	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout" mapstructure:"tls_handshake_timeout" default:"10s"`
 	ExpectContinueTimeout time.Duration `yaml:"expect_continue_timeout" mapstructure:"expect_continue_timeout" default:"1s"`
+	PassthroughIdleTimeout time.Duration `yaml:"passthrough_idle_timeout" mapstructure:"passthrough_idle_timeout" default:"30s"`
 }
 
 // ACMEConfig defines global settings for Let's Encrypt certificate acquisition.

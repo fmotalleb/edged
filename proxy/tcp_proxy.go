@@ -246,6 +246,13 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 		zap.String("upstream", route.Upstream),
 		zap.String("host", route.Host))
 
+	// Determine the passthrough idle timeout. The route's setting overrides the
+	// default of 30s set by config defaults.
+	idleTimeout := route.PassthroughIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = 30 * time.Second
+	}
+
 	// Use context-aware copy so shutdown cancels in-flight transfers.
 	// A read deadline is periodically applied so that a blocked Read() does
 	// not prevent goroutine shutdown when the context is cancelled.
@@ -254,13 +261,13 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 
 	go func() {
 		defer wg.Done()
-		if _, err := l.copyContext(l.baseCtx, upstream, conn, true); err != nil && err != io.EOF && err != context.Canceled {
+		if _, err := l.copyContext(l.baseCtx, upstream, conn, idleTimeout); err != nil && err != io.EOF && err != context.Canceled {
 			logger.Debug("TLS passthrough upstream write error", zap.Error(err))
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if _, err := l.copyContext(l.baseCtx, conn, upstream, true); err != nil && err != io.EOF && err != context.Canceled {
+		if _, err := l.copyContext(l.baseCtx, conn, upstream, idleTimeout); err != nil && err != io.EOF && err != context.Canceled {
 			logger.Debug("TLS passthrough downstream write error", zap.Error(err))
 		}
 	}()
@@ -272,21 +279,22 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 // an error occurs, or ctx is cancelled. It returns the number of bytes
 // copied and the first error encountered.
 //
-// When setDeadline is true, src is treated as a net.Conn and has its
-// read deadline reset every loop iteration so that a blocked Read()
-// eventually wakes up and can observe context cancellation.
-func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer, src io.Reader, setDeadline bool) (int64, error) {
+// idleTimeout controls how long the copy waits between reads before
+// treating the connection as idle. A timeout fires the read deadline,
+// which wakes up the loop to check ctx.Done() for graceful shutdown.
+// If idleTimeout is zero, no read deadline is set (no idle timeout).
+func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer, src io.Reader, idleTimeout time.Duration) (int64, error) {
 	buf := make([]byte, 32*1024)
 	var written int64
 
-	// If src supports deadlines, use a 30-second window.
+	// If src supports deadlines, apply the idle timeout periodically.
 	srcConn, canDeadline := src.(net.Conn)
 
 	for {
 		// Apply a read deadline so a blocked Read() unblocks periodically
 		// and the ctx.Done() check below takes effect.
-		if canDeadline && setDeadline {
-			_ = srcConn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		if canDeadline && idleTimeout > 0 {
+			_ = srcConn.SetReadDeadline(time.Now().Add(idleTimeout))
 		}
 
 		select {

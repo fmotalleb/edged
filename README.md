@@ -29,6 +29,11 @@
    - **ArvanCloud CDN DNS**: Integrated with ArvanCloud API (`ARVANCLOUD_API_KEY`) for seamless TXT record creation and cleanup.
    - Automatically generates wildcard certificates (`*.example.com`) without manual intervention.
 
+6. **TLS Passthrough / No TLS Termination (`no_tls_termination`)**:
+   - Routes can be configured with `no_tls_termination: true` to forward raw encrypted TLS traffic to the upstream server without decrypting it at the proxy.
+   - The proxy inspects the TLS ClientHello (SNI) to determine the correct route, then pipes the raw bytes directly to the upstream — preserving end-to-end encryption.
+   - Both TLS-terminated and TLS-passthrough routes can coexist on the same listener port.
+
 5. **Modern Go Tools Integration (`fmotalleb/go-tools`) & Cobra CLI**:
    - **Cobra CLI**: Powerful command-line interface with persistent flags and subcommands (`edged run`, `edged validate`).
    - **Context-Scoped Zap Logging**: Uses `github.com/fmotalleb/go-tools/log` to retrieve structured `*zap.Logger` instances directly from `context.Context`.
@@ -50,7 +55,8 @@
 │   └── config.go            # Mapstructure config loader, defaults, validation
 ├── proxy/
 │       ├── listener.go          # HTTP/HTTPS listener manager, TLS GetCertificate binding
-│       └── reverse_proxy.go     # ReverseProxy routing engine, custom director, error handling
+│       ├── reverse_proxy.go     # ReverseProxy routing engine, custom director, error handling
+│       └── tcp_proxy.go         # TLS passthrough TCP proxy for no_tls_termination routes
 ├── config.yaml                  # Example production YAML configuration
 ├── Dockerfile                   # Multi-stage optimized build for Docker deployment
 ├── Makefile                     # Build, run, and validation automation
@@ -110,6 +116,13 @@ listeners:
         upstream: "http://10.0.0.10:8081"
         upstream_socks5_proxy: "socks5://user:pass@127.0.0.1:1080"
 
+      # TLS Passthrough — proxy does NOT terminate TLS, forwards encrypted bytes as-is
+      - host: "no-terminate.com"
+        upstream: "http://127.0.0.1:8443"
+        no_tls_termination: true
+        upstream_socks5_proxy: "socks5://127.0.0.1:1080"
+        passthrough_idle_timeout: 30s   # idle read deadline for TCP proxy
+
 # Global ACME Let's Encrypt Configuration
 acme:
   email: "admin@example.com"
@@ -138,6 +151,74 @@ acme:
       polling_interval: 2
       ttl: 300
 ```
+
+---
+
+## 🔐 TLS Passthrough (`no_tls_termination`)
+
+TLS passthrough allows the proxy to forward raw encrypted TLS traffic to an upstream server without terminating (decrypting) the TLS connection at the proxy. This is useful when:
+
+- The upstream server handles its own TLS (e.g., a service with its own certificate).
+- You want end-to-end encryption preserved through the proxy.
+- The upstream requires client certificates that the proxy does not have.
+
+### How It Works
+
+When a route has `no_tls_termination: true`:
+
+1. The proxy accepts the raw TCP connection **before** any TLS handshake.
+2. It reads the TLS ClientHello message to extract the **SNI** (Server Name Indication) — the hostname the client is trying to reach.
+3. It matches the SNI against the configured routes (exact match or `*.example.com` glob).
+4. If the matched route has `no_tls_termination: true`:
+   - The proxy dials the upstream server (directly or through a SOCKS5 proxy if configured).
+   - It pipes the raw bytes — including the original ClientHello — directly to the upstream.
+   - The upstream completes the TLS handshake with the client; the proxy never sees the decrypted data.
+5. If the matched route does **not** have `no_tls_termination`, the proxy terminates TLS normally and serves the HTTP request via the standard reverse proxy pipeline.
+
+> Both TLS-terminated and TLS-passthrough routes can coexist on the **same listener port** because the proxy inspects the SNI to decide which path to take.
+
+### Configuration Example
+
+```yaml
+listeners:
+  - name: "https-listener"
+    address: "0.0.0.0:443"
+    protocol: "https"
+    tls:
+      enabled: true
+      use_acme: true
+      domains:
+        - "example.com"
+        - "no-terminate.com"
+    routes:
+      # Normal TLS termination — proxy decrypts and forwards as HTTP
+      - host: "example.com"
+        path_prefix: "/"
+        upstream: "http://127.0.0.1:8080"
+
+      # TLS passthrough — proxy forwards encrypted bytes as-is
+      - host: "no-terminate.com"
+        upstream: "http://127.0.0.1:8443"
+        no_tls_termination: true
+```
+
+### SOCKS5 Proxy Support
+
+TLS passthrough routes fully support `upstream_socks5_proxy`. When configured, the upstream TCP connection is established through the SOCKS5 proxy:
+
+```yaml
+- host: "no-terminate.com"
+  upstream: "http://127.0.0.1:8443"
+  no_tls_termination: true
+  upstream_socks5_proxy: "socks5://127.0.0.1:1080"
+```
+
+### Important Notes
+
+- `no_tls_termination` is a **route-level** setting. Routes on the same listener can mix terminated and passthrough traffic.
+- The TLS certificate for passthrough domains (e.g., `no-terminate.com`) must be configured on the **upstream server**, not on the proxy.
+- The proxy still needs its own TLS certificate for ACME or static TLS to handle **terminated** routes on the same listener.
+- Passthrough routing is based solely on the SNI hostname — path-prefix matching is not available at the TCP level.
 
 ---
 

@@ -57,6 +57,9 @@ listeners:
       - host: "google.com"
         upstream: "https://142.251.38.14:443"
         no_tls_termination: true
+        # Maximum idle time between reads before the TCP proxy connection times out.
+        # Defaults to 30s. Set to 0 to disable idle timeout entirely.
+        passthrough_idle_timeout: 30s
 
       # Route 2: API subdomain with path stripping
       - host: "api.example.com"
