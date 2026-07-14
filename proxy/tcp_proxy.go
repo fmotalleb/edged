@@ -15,6 +15,7 @@ import (
 
 	"github.com/fmotalleb/go-tools/log"
 	"go.uber.org/zap"
+	"golang.org/x/net/proxy"
 
 	"github.com/fmotalleb/edged/config"
 	edgedtls "github.com/fmotalleb/edged/crypto/tls"
@@ -115,8 +116,7 @@ func (l *TLSPassThroughListener) handleConn(conn net.Conn) {
 	logger := log.FromContext(l.baseCtx)
 
 	// Read enough bytes to extract the SNI from the TLS ClientHello.
-	// A typical ClientHello is ~250–500 bytes; we read up to 1 KiB.
-	peekBuf := make([]byte, 1024)
+	peekBuf := make([]byte, 4096)
 
 	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		logger.Debug("Failed to set read deadline on incoming conn", zap.Error(err))
@@ -185,6 +185,9 @@ func (c *prependReaderConn) Read(b []byte) (int, error) {
 // proxyTCP performs a raw TCP proxy (TLS passthrough). It dials the upstream
 // server and pipes data bidirectionally. The wrapped connection replays the
 // ClientHello first, so the upstream TLS layer receives the complete handshake.
+//
+// If the route has upstream_socks5_proxy configured, the upstream connection
+// is established through the SOCKS5 proxy instead of directly.
 func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfig) {
 	logger := log.FromContext(l.baseCtx)
 
@@ -203,10 +206,37 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 		upstreamAddr = upstreamURL.Path // fallback for bare "host:port" strings
 	}
 
-	upstream, err := net.DialTimeout("tcp", upstreamAddr, 10*time.Second)
+	var upstream net.Conn
+	if route.UpstreamSOCKS5Proxy != "" {
+		// Dial via SOCKS5 proxy.
+		proxyURL, proxyErr := url.Parse(route.UpstreamSOCKS5Proxy)
+		if proxyErr != nil {
+			logger.Error("Invalid upstream_socks5_proxy URL",
+				zap.String("socks5_proxy", route.UpstreamSOCKS5Proxy),
+				zap.Error(proxyErr))
+			return
+		}
+
+		logger.Debug("TLS passthrough: dialing upstream via SOCKS5",
+			zap.String("upstream", route.Upstream),
+			zap.String("socks5_proxy", route.UpstreamSOCKS5Proxy))
+
+		dialer, dialerErr := proxy.FromURL(proxyURL, proxy.Direct)
+		if dialerErr != nil {
+			logger.Error("Failed to create SOCKS5 dialer",
+				zap.String("socks5_proxy", route.UpstreamSOCKS5Proxy),
+				zap.Error(dialerErr))
+			return
+		}
+
+		upstream, err = dialer.Dial("tcp", upstreamAddr)
+	} else {
+		upstream, err = net.DialTimeout("tcp", upstreamAddr, 10*time.Second)
+	}
 	if err != nil {
 		logger.Error("Failed to connect to upstream for TLS passthrough",
 			zap.String("upstream", route.Upstream),
+			zap.String("socks5_proxy", route.UpstreamSOCKS5Proxy),
 			zap.Error(err))
 		return
 	}
@@ -351,16 +381,16 @@ func matchRouteBySNI(host string, routes []config.RouteConfig) (*config.RouteCon
 	host = strings.ToLower(strings.TrimSpace(host))
 
 	for i := range routes {
-		if matchHostGlob(host, routes[i].Host) {
+		if matchHostShared(host, routes[i].Host) {
 			return &routes[i], true
 		}
 	}
 	return nil, false
 }
 
-// matchHostGlob checks if requestHost matches routeHost, supporting exact
+// matchHostShared checks if requestHost matches routeHost, supporting exact
 // match, wildcard "*", and glob pattern "*.example.com".
-func matchHostGlob(requestHost, routeHost string) bool {
+func matchHostShared(requestHost, routeHost string) bool {
 	routeHost = strings.ToLower(strings.TrimSpace(routeHost))
 	if routeHost == "" || routeHost == "*" || requestHost == routeHost {
 		return true

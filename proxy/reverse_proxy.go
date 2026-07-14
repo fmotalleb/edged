@@ -191,19 +191,7 @@ func (r *Router) deriveContext(reqCtx context.Context) (context.Context, context
 
 // matchHost checks exact host matching and wildcard (*.example.com) matching.
 func (r *Router) matchHost(requestHost, routeHost string) bool {
-	routeHost = strings.ToLower(strings.TrimSpace(routeHost))
-	if routeHost == "" || routeHost == "*" || requestHost == routeHost {
-		return true
-	}
-
-	if strings.HasPrefix(routeHost, "*.") {
-		domainSuffix := routeHost[1:] // e.g., ".example.com"
-		if strings.HasSuffix(requestHost, domainSuffix) {
-			return true
-		}
-	}
-
-	return false
+	return matchHostShared(requestHost, routeHost)
 }
 
 // createDirector returns a Rewrite function for ReverseProxy. It reads the

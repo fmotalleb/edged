@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}",
-            "env": {},
+            "env": {"DEBUG": "true"},
             "args": ["-v","--config=config.local.yaml"]
         }
     ]
