@@ -200,6 +200,8 @@ listeners:
       - host: "no-terminate.com"
         upstream: "http://127.0.0.1:8443"
         no_tls_termination: true
+        # Optional: idle read deadline for passthrough TCP connections (default: 30s)
+        passthrough_idle_timeout: 30s
 ```
 
 ### SOCKS5 Proxy Support
@@ -211,6 +213,8 @@ TLS passthrough routes fully support `upstream_socks5_proxy`. When configured, t
   upstream: "http://127.0.0.1:8443"
   no_tls_termination: true
   upstream_socks5_proxy: "socks5://127.0.0.1:1080"
+  # Idle timeout for TCP proxy reads; 0 disables the deadline
+  passthrough_idle_timeout: 60s
 ```
 
 ### Important Notes
