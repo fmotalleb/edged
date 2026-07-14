@@ -22,6 +22,8 @@ type Server struct {
 	acmeMgr *acme.Manager
 	servers []*http.Server
 	mu      sync.Mutex
+
+	tlsPassthroughServers []*TLSPassThroughListener
 }
 
 // NewServer initializes the listener manager with configuration and ACME certificate manager.
@@ -59,7 +61,6 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 			handler = router
 		}
-
 		srv := &http.Server{
 			Addr:         l.Address,
 			Handler:      handler,
@@ -99,15 +100,34 @@ func (s *Server) Start(ctx context.Context) error {
 					tlsConfig.Certificates = []tls.Certificate{cert}
 				}
 			}
-			srv.TLSConfig = tlsConfig
 
-			s.servers = append(s.servers, srv)
-			go func(name, addr string, s *http.Server) {
-				logger.Info("Starting HTTPS reverse proxy listener", zap.String("listener", name), zap.String("address", addr))
-				if err := s.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-					logger.Fatal("Fatal HTTPS server error", zap.String("listener", name), zap.Error(err))
-				}
-			}(l.Name, l.Address, srv)
+			// If any route has no_tls_termination enabled, we must use a raw TCP
+			// listener that inspects the SNI to decide between TLS passthrough
+			// and TLS termination on a per-connection basis.
+			if hasPassthroughRoutes(l.Routes) {
+				passthroughSrv := NewTLSPassThroughListener(ctx, l.Address, l.Routes, handler, tlsConfig,
+					l.ReadTimeout, l.WriteTimeout, l.IdleTimeout)
+
+				s.tlsPassthroughServers = append(s.tlsPassthroughServers, passthroughSrv)
+				go func(name, addr string, p *TLSPassThroughListener) {
+					logger.Info("Starting HTTPS listener with TLS passthrough support",
+						zap.String("listener", name),
+						zap.String("address", addr))
+					if err := p.ListenAndServe(); err != nil {
+						logger.Fatal("Fatal TLS passthrough proxy error", zap.String("listener", name), zap.Error(err))
+					}
+				}(l.Name, l.Address, passthroughSrv)
+			} else {
+				srv.TLSConfig = tlsConfig
+
+				s.servers = append(s.servers, srv)
+				go func(name, addr string, s *http.Server) {
+					logger.Info("Starting HTTPS reverse proxy listener", zap.String("listener", name), zap.String("address", addr))
+					if err := s.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+						logger.Fatal("Fatal HTTPS server error", zap.String("listener", name), zap.Error(err))
+					}
+				}(l.Name, l.Address, srv)
+			}
 		} else {
 			s.servers = append(s.servers, srv)
 			go func(name, addr string, s *http.Server) {
@@ -133,6 +153,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	var errs []string
 	var errMu sync.Mutex
 
+	// Shut down standard HTTP servers.
 	for _, srv := range s.servers {
 		wg.Add(1)
 		go func(s *http.Server) {
@@ -143,6 +164,19 @@ func (s *Server) Stop(ctx context.Context) error {
 				errMu.Unlock()
 			}
 		}(srv)
+	}
+
+	// Shut down TLS passthrough listeners.
+	for _, p := range s.tlsPassthroughServers {
+		wg.Add(1)
+		go func(p *TLSPassThroughListener) {
+			defer wg.Done()
+			if err := p.Shutdown(); err != nil {
+				errMu.Lock()
+				errs = append(errs, fmt.Sprintf("tls passthrough server on %s shutdown error: %v", p.address, err))
+				errMu.Unlock()
+			}
+		}(p)
 	}
 
 	wg.Wait()

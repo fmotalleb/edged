@@ -63,6 +63,7 @@ type RouteConfig struct {
 	PathPrefix          string            `yaml:"path_prefix" mapstructure:"path_prefix" default:"/"`
 	Upstream            string            `yaml:"upstream" mapstructure:"upstream" validate:"omitempty,url"`
 	StripPrefix         bool              `yaml:"strip_prefix" mapstructure:"strip_prefix"`
+	NoTLSTermination    bool              `yaml:"no_tls_termination" mapstructure:"no_tls_termination"`
 	Timeout             time.Duration     `yaml:"timeout" mapstructure:"timeout" default:"30s"`
 	CustomHeaders       map[string]string `yaml:"custom_headers" mapstructure:"custom_headers"`
 	Debug               bool              `yaml:"debug" mapstructure:"debug" env:"DEBUG"`

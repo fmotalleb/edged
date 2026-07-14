@@ -54,6 +54,10 @@ listeners:
         custom_headers:
           X-Proxy-Engine: "Go-Advanced-Proxy"
 
+      - host: "no-terminate.com"
+        upstream: "http://127.0.0.1:8080"
+        no_tls_termination: true
+
       # Route 2: API subdomain with path stripping
       - host: "api.example.com"
         path_prefix: "/v1"
