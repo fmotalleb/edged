@@ -64,9 +64,14 @@ listeners:
       # Route 2: API subdomain with path stripping
       - host: "api.example.com"
         path_prefix: "/v1"
-        upstream: "http://127.0.0.1:3000"
+        upstream: "https://api.internal.example:443"
         strip_prefix: false
         timeout: 60s
+        # Set to false to skip upstream TLS certificate verification.
+        # Useful when proxying to internal services with self-signed or
+        # private CA certificates. Only applies to HTTPS upstreams.
+        # Defaults to true (verify certificates).
+        # verify_ssl: false
 
       # Route 3: Wildcard fallback for any other subdomain (e.g. tenant1.example.com)
       # Route-level SOCKS5 proxy: tunnels traffic to this specific upstream via SOCKS5
@@ -94,6 +99,13 @@ acme:
   # Production: https://acme-v02.api.letsencrypt.org/directory
   # Staging (recommended during setup/testing): https://acme-staging-v02.api.letsencrypt.org/directory
   directory_url: "https://acme-v02.api.letsencrypt.org/directory"
+
+  # Set to false to skip TLS certificate verification when connecting
+  # to the ACME directory server. Useful when using a custom/internal
+  # ACME server with a self-signed or private CA certificate, or during
+  # testing with the staging environment behind a proxy that intercepts TLS.
+  # Defaults to true (verify certificates).
+  # verify_ssl: false
 
   # SOCKS5 Proxy used to send all HTTP/HTTPS requests to Let's Encrypt ACME servers.
   # Format: "socks5://[user:password@]host:port" (e.g., "socks5://127.0.0.1:1080")

@@ -62,6 +62,7 @@ type RouteConfig struct {
 	Host                string            `yaml:"host" mapstructure:"host"`
 	PathPrefix          string            `yaml:"path_prefix" mapstructure:"path_prefix" default:"/"`
 	Upstream            string            `yaml:"upstream" mapstructure:"upstream" validate:"omitempty,url"`
+	VerifySSL           *bool             `yaml:"verify_ssl" mapstructure:"verify_ssl" env:"VERIFY_SSL_UPSTREAM"`
 	StripPrefix         bool              `yaml:"strip_prefix" mapstructure:"strip_prefix"`
 	NoTLSTermination    bool              `yaml:"no_tls_termination" mapstructure:"no_tls_termination"`
 	Timeout             time.Duration     `yaml:"timeout" mapstructure:"timeout" default:"30s"`
@@ -69,13 +70,13 @@ type RouteConfig struct {
 	Debug               bool              `yaml:"debug" mapstructure:"debug" env:"DEBUG"`
 	UpstreamSOCKS5Proxy string            `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"`
 
-	DialerTimeout         time.Duration `yaml:"dialer_timeout" mapstructure:"dialer_timeout" default:"30s"`
-	DialerKeepalive       time.Duration `yaml:"dialer_keepalive" mapstructure:"dialer_keepalive" default:"30s"`
-	ForceAttemptHTTP2     bool          `yaml:"force_attempt_http2" mapstructure:"force_attempt_http2" default:"true"`
-	MaxIdleConns          int           `yaml:"max_idle_conns" mapstructure:"max_idle_conns" default:"100"`
-	IdleConnTimeout       time.Duration `yaml:"idle_conn_timeout" mapstructure:"idle_conn_timeout" default:"90s"`
-	TLSHandshakeTimeout   time.Duration `yaml:"tls_handshake_timeout" mapstructure:"tls_handshake_timeout" default:"10s"`
-	ExpectContinueTimeout time.Duration `yaml:"expect_continue_timeout" mapstructure:"expect_continue_timeout" default:"1s"`
+	DialerTimeout          time.Duration `yaml:"dialer_timeout" mapstructure:"dialer_timeout" default:"30s"`
+	DialerKeepalive        time.Duration `yaml:"dialer_keepalive" mapstructure:"dialer_keepalive" default:"30s"`
+	ForceAttemptHTTP2      bool          `yaml:"force_attempt_http2" mapstructure:"force_attempt_http2" default:"true"`
+	MaxIdleConns           int           `yaml:"max_idle_conns" mapstructure:"max_idle_conns" default:"100"`
+	IdleConnTimeout        time.Duration `yaml:"idle_conn_timeout" mapstructure:"idle_conn_timeout" default:"90s"`
+	TLSHandshakeTimeout    time.Duration `yaml:"tls_handshake_timeout" mapstructure:"tls_handshake_timeout" default:"10s"`
+	ExpectContinueTimeout  time.Duration `yaml:"expect_continue_timeout" mapstructure:"expect_continue_timeout" default:"1s"`
 	PassthroughIdleTimeout time.Duration `yaml:"passthrough_idle_timeout" mapstructure:"passthrough_idle_timeout" default:"30s"`
 }
 
@@ -85,6 +86,7 @@ type RouteConfig struct {
 type ACMEConfig struct {
 	Email              string            `yaml:"email" mapstructure:"email" validate:"omitempty,email"`
 	DirectoryURL       string            `yaml:"directory_url" mapstructure:"directory_url" default:"https://acme-v02.api.letsencrypt.org/directory" validate:"omitempty,url"`
+	VerifySSL          *bool             `yaml:"verify_ssl" mapstructure:"verify_ssl" env:"VERIFY_SSL_ACME"`
 	SOCKS5Proxy        string            `yaml:"socks5_proxy" mapstructure:"socks5_proxy"`
 	StoragePath        string            `yaml:"storage_path" mapstructure:"storage_path" default:"./acme_storage"`
 	RenewBeforeDays    int               `yaml:"renew_before_days" mapstructure:"renew_before_days" default:"30" validate:"gte=1"`

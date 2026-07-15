@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -66,6 +67,7 @@ func NewProxyRouter(ctx context.Context, listenerName, protocol string, routes [
 			IdleConnTimeout:       rc.IdleConnTimeout,
 			TLSHandshakeTimeout:   rc.TLSHandshakeTimeout,
 			ExpectContinueTimeout: rc.ExpectContinueTimeout,
+			TLSClientConfig:       upstreamTLSConfig(rc.VerifySSL),
 		}
 
 		// Upgrade to explicit SOCKS5 socket dialing if upstream_socks5_proxy is configured
@@ -235,6 +237,17 @@ func (r *Router) createDirector(target *url.URL, rc config.RouteConfig) func(*ht
 		// Preserve request host header or override
 		out.Host = in.Host
 	}
+}
+
+// upstreamTLSConfig creates the TLS client config for upstream connections.
+// It disables certificate verification when verifySSL is explicitly set to false.
+func upstreamTLSConfig(verifySSL *bool) *tls.Config {
+	if verifySSL != nil && !*verifySSL {
+		return &tls.Config{
+			InsecureSkipVerify: true, //nolint:gosec
+		}
+	}
+	return nil
 }
 
 // createErrorHandler handles upstream connection failures and timeouts gracefully.

@@ -344,10 +344,18 @@ func NewManagerFromConfig(ctx context.Context, cfg config.ACMEConfig, opts ...Ma
 func newACMETransport(ctx context.Context, cfg config.ACMEConfig) (*http.Transport, error) {
 	logger := log.FromContext(ctx)
 
+	tlsConfig := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+	}
+
+	// Disable ACME server certificate verification when explicitly set to false.
+	if cfg.VerifySSL != nil && !*cfg.VerifySSL {
+		tlsConfig.InsecureSkipVerify = true //nolint:gosec
+		logger.Warn("ACME server TLS verification is disabled (VERIFY_SSL_ACME=false)")
+	}
+
 	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		},
+		TLSClientConfig: tlsConfig,
 	}
 
 	if cfg.SOCKS5Proxy == "" {
