@@ -38,6 +38,7 @@ jobs:
           name: coverage-${{ matrix.os }}
           path: coverage.*
 
+      - run: make install
       - run: goreleaser release --clean --snapshot
         if: ${{ runner.os == 'Linux' }}
 
