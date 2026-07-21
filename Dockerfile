@@ -1,4 +1,13 @@
 FROM library/debian:trixie-slim
+RUN <<EOF
+apt-get update
+apt-get full-upgrade -y
+apt-get install -y ca-certificates
+rm -rf /var/lib/apt/lists/*
+apt autoclean -y
+apt autopurge -y
+EOF
+
 ARG TARGETPLATFORM
 COPY $TARGETPLATFORM/edged /
 # Because its a scratch image, it does not contain ca-certificates dus it ignores the ssl verification
