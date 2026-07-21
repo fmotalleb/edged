@@ -449,13 +449,21 @@ func (m *Manager) configureArvanCloudDNS01Provider(
 		}
 	}
 
-	provider, err := arvancloud.NewDNSProviderConfig(arvConfig)
+	innerProvider, err := arvancloud.NewDNSProviderConfig(arvConfig)
 	if err != nil {
 		return fmt.Errorf("failed to initialize ArvanCloud DNS provider: %w", err)
 	}
 
+	// Wrap in a fix provider that cleans stale records before creating new ones,
+	// preventing "DNS Record Data is duplicate" 422 errors from the ArvanCloud API.
+	fixedProvider := newArvancloudFixProvider(
+		innerProvider,
+		cfg.DNSProvider.ArvanCloud.APIKey,
+		arvConfig.HTTPClient,
+	)
+
 	if err := m.client.Challenge.SetDNS01Provider(
-		provider,
+		fixedProvider,
 		dns01.AddRecursiveNameservers(dns01.ParseNameservers(recursiveServers)),
 	); err != nil {
 		return fmt.Errorf("failed to set ArvanCloud DNS-01 provider: %w", err)
