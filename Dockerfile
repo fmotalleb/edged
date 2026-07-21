@@ -1,4 +1,4 @@
-FROM scratch
+FROM library/debian:trixie-slim
 ARG TARGETPLATFORM
 COPY $TARGETPLATFORM/edged /
 # Because its a scratch image, it does not contain ca-certificates dus it ignores the ssl verification
