@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/fmotalleb/go-tools/log"
+	"github.com/pires/go-proxyproto"
 	"go.uber.org/zap"
 
 	"github.com/fmotalleb/edged/acme"
@@ -117,26 +118,62 @@ func (s *Server) Start(ctx context.Context) error {
 					if err := p.ListenAndServe(); err != nil {
 						logger.Fatal("Fatal TLS passthrough proxy error", zap.String("listener", name), zap.Error(err))
 					}
-				}(l.Name, l.Address, passthroughSrv)
+					}(l.Name, l.Address, passthroughSrv)
 			} else {
 				srv.TLSConfig = tlsConfig
 
+				if proxyProtocolEnabled(l.ProxyProtocol) {
+					rawListener, err := net.Listen("tcp", l.Address)
+					if err != nil {
+						return fmt.Errorf("tcp listen on %s for PROXY protocol: %w", l.Address, err)
+					}
+					srvppListener := &proxyproto.Listener{Listener: rawListener}
+					s.servers = append(s.servers, srv)
+					go func(name string, s *http.Server) {
+						logger.Info("Starting HTTPS reverse proxy listener with PROXY protocol",
+							zap.String("listener", name),
+							zap.String("address", rawListener.Addr().String()),
+							zap.String("proxy_protocol", l.ProxyProtocol))
+						if err := s.ServeTLS(srvppListener, "", ""); err != nil && err != http.ErrServerClosed {
+							logger.Fatal("Fatal HTTPS server error", zap.String("listener", name), zap.Error(err))
+						}
+					}(l.Name, srv)
+				} else {
+					s.servers = append(s.servers, srv)
+					go func(name, addr string, s *http.Server) {
+						logger.Info("Starting HTTPS reverse proxy listener", zap.String("listener", name), zap.String("address", addr))
+						if err := s.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+							logger.Fatal("Fatal HTTPS server error", zap.String("listener", name), zap.Error(err))
+						}
+					}(l.Name, l.Address, srv)
+				}
+			}
+		} else {
+			if proxyProtocolEnabled(l.ProxyProtocol) {
+				rawListener, err := net.Listen("tcp", l.Address)
+				if err != nil {
+					return fmt.Errorf("tcp listen on %s for PROXY protocol: %w", l.Address, err)
+				}
+				srvppListener := &proxyproto.Listener{Listener: rawListener}
+				s.servers = append(s.servers, srv)
+				go func(name string, s *http.Server) {
+					logger.Info("Starting HTTP server listener with PROXY protocol",
+						zap.String("listener", name),
+						zap.String("address", rawListener.Addr().String()),
+						zap.String("proxy_protocol", l.ProxyProtocol))
+					if err := s.Serve(srvppListener); err != nil && err != http.ErrServerClosed {
+						logger.Fatal("Fatal HTTP server error", zap.String("listener", name), zap.Error(err))
+					}
+				}(l.Name, srv)
+			} else {
 				s.servers = append(s.servers, srv)
 				go func(name, addr string, s *http.Server) {
-					logger.Info("Starting HTTPS reverse proxy listener", zap.String("listener", name), zap.String("address", addr))
-					if err := s.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
-						logger.Fatal("Fatal HTTPS server error", zap.String("listener", name), zap.Error(err))
+					logger.Info("Starting HTTP server listener", zap.String("listener", name), zap.String("address", addr))
+					if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+						logger.Fatal("Fatal HTTP server error", zap.String("listener", name), zap.Error(err))
 					}
 				}(l.Name, l.Address, srv)
 			}
-		} else {
-			s.servers = append(s.servers, srv)
-			go func(name, addr string, s *http.Server) {
-				logger.Info("Starting HTTP server listener", zap.String("listener", name), zap.String("address", addr))
-				if err := s.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logger.Fatal("Fatal HTTP server error", zap.String("listener", name), zap.Error(err))
-				}
-			}(l.Name, l.Address, srv)
 		}
 	}
 
