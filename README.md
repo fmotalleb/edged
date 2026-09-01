@@ -34,6 +34,11 @@
    - The proxy inspects the TLS ClientHello (SNI) to determine the correct route, then pipes the raw bytes directly to the upstream — preserving end-to-end encryption.
    - Both TLS-terminated and TLS-passthrough routes can coexist on the same listener port.
 
+7. **HAProxy PROXY Protocol v1/v2 Support**:
+   - **Inbound**: When `proxy_protocol` is set to `"1"` or `"2"` on a listener, the proxy parses PROXY protocol headers from upstream load balancers (HAProxy, AWS NLB, etc.) to extract the real client IP.
+   - **Outbound**: When `proxy_protocol` is set to `"1"` or `"2"` on a TLS passthrough route, a PROXY protocol header is sent to the upstream server before piping application data.
+   - **Header-based IP resolution**: For HTTP/HTTPS handlers, the proxy resolves the real client IP from trusted headers (`CF-Connecting-IP`, `True-Client-IP`, `X-Real-IP`, `X-Forwarded-For`) with fallback to `RemoteAddr`. Header-based IP overrides PROXY protocol addresses when both are present.
+
 5. **Modern Go Tools Integration (`fmotalleb/go-tools`) & Cobra CLI**:
    - **Cobra CLI**: Powerful command-line interface with persistent flags and subcommands (`edged run`, `edged validate`).
    - **Context-Scoped Zap Logging**: Uses `github.com/fmotalleb/go-tools/log` to retrieve structured `*zap.Logger` instances directly from `context.Context`.
@@ -223,6 +228,62 @@ TLS passthrough routes fully support `upstream_socks5_proxy`. When configured, t
 - The TLS certificate for passthrough domains (e.g., `no-terminate.com`) must be configured on the **upstream server**, not on the proxy.
 - The proxy still needs its own TLS certificate for ACME or static TLS to handle **terminated** routes on the same listener.
 - Passthrough routing is based solely on the SNI hostname — path-prefix matching is not available at the TCP level.
+
+---
+
+## 🔀 PROXY Protocol Support
+
+The proxy supports HAProxy PROXY protocol v1 (text) and v2 (binary) for both inbound and outbound connections. This is useful when:
+
+- The proxy sits behind a load balancer (HAProxy, AWS NLB) that sends PROXY protocol headers.
+- The upstream server expects PROXY protocol headers to identify the original client.
+
+### Inbound (Listener Level)
+
+Enable PROXY protocol parsing on a listener to extract the real client IP from incoming connections:
+
+```yaml
+listeners:
+  - name: "https-listener"
+    address: "0.0.0.0:443"
+    protocol: "https"
+    # Parse PROXY protocol v2 headers from HAProxy/NLB
+    proxy_protocol: "2"  # Options: "none" (default), "1" (text), "2" (binary)
+    tls:
+      enabled: true
+      use_acme: true
+      domains:
+        - "example.com"
+    routes:
+      - host: "example.com"
+        upstream: "http://127.0.0.1:8080"
+```
+
+### Outbound (TLS Passthrough Route Level)
+
+Send PROXY protocol headers to upstream servers on TLS passthrough routes:
+
+```yaml
+routes:
+  - host: "backend.example.com"
+    upstream: "https://10.0.0.1:443"
+    no_tls_termination: true
+    # Send PROXY protocol v2 header to upstream before piping data
+    proxy_protocol: "2"  # Options: "none" (default), "1" (text), "2" (binary)
+```
+
+### Header-Based IP Resolution
+
+For HTTP/HTTPS handlers, the proxy automatically resolves the real client IP from trusted proxy headers. This works with CDNs like Cloudflare and load balancers that set these headers:
+
+| Header | Provider |
+| :--- | :--- |
+| `CF-Connecting-IP` | Cloudflare |
+| `True-Client-IP` | Akamai |
+| `X-Real-IP` | Generic |
+| `X-Forwarded-For` | Generic (first IP in chain) |
+
+Header-based IP resolution overrides the PROXY protocol address when both are present.
 
 ---
 

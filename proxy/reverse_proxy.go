@@ -196,10 +196,49 @@ func (r *Router) matchHost(requestHost, routeHost string) bool {
 	return matchHostShared(requestHost, routeHost)
 }
 
+// resolveClientIP extracts the real client IP from the incoming request.
+// It checks trusted proxy headers in order of priority: CF-Connecting-IP
+// (Cloudflare), True-Client-IP (Akamai), X-Real-IP, and the first IP in
+// X-Forwarded-For. If none of these headers are present, it falls back to
+// the direct connection RemoteAddr. This allows load balancers and CDNs to
+// communicate the original client IP even when the proxy is not PROXY-protocol-aware.
+func resolveClientIP(req *http.Request) string {
+	// Check Cloudflare's CF-Connecting-IP header first.
+	if ip := strings.TrimSpace(req.Header.Get("CF-Connecting-IP")); ip != "" {
+		return ip
+	}
+	// Check Akamai's True-Client-IP header.
+	if ip := strings.TrimSpace(req.Header.Get("True-Client-IP")); ip != "" {
+		return ip
+	}
+	// Check X-Real-IP header.
+	if ip := strings.TrimSpace(req.Header.Get("X-Real-IP")); ip != "" {
+		return ip
+	}
+	// Check X-Forwarded-For: take the first (leftmost) IP, which is the original client.
+	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
+		// X-Forwarded-For format: "client, proxy1, proxy2"
+		if idx := strings.IndexByte(xff, ','); idx != -1 {
+			return strings.TrimSpace(xff[:idx])
+		}
+		return strings.TrimSpace(xff)
+	}
+	// Fallback to the direct connection RemoteAddr.
+	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		return clientIP
+	}
+	return req.RemoteAddr
+}
+
 // createDirector returns a Rewrite function for ReverseProxy. It reads the
 // original request from pr.In and mutates the outbound clone pr.Out - pr.Out
 // is what actually gets sent upstream, so all header/path/host changes must
 // be applied there.
+//
+// Client IP resolution: the real client IP is resolved from trusted proxy
+// headers (CF-Connecting-IP, True-Client-IP, X-Real-IP, X-Forwarded-For)
+// with fallback to RemoteAddr. This header-based IP overrides any PROXY
+// protocol address when both are present.
 func (r *Router) createDirector(target *url.URL, rc config.RouteConfig) func(*httputil.ProxyRequest) {
 	return func(pr *httputil.ProxyRequest) {
 		// Equivalent of the legacy Director: sets scheme/host and joins the
@@ -209,16 +248,18 @@ func (r *Router) createDirector(target *url.URL, rc config.RouteConfig) func(*ht
 		out := pr.Out
 		in := pr.In
 
+		// Resolve the real client IP from trusted proxy headers. This
+		// overrides the PROXY protocol address when headers are present.
+		clientIP := resolveClientIP(in)
+
 		// Set standard forwarding headers
 		out.Header.Set("X-Forwarded-Proto", r.protocol)
-		if clientIP, _, err := net.SplitHostPort(in.RemoteAddr); err == nil {
-			if prior := in.Header.Get("X-Forwarded-For"); prior != "" {
-				out.Header.Set("X-Forwarded-For", prior+", "+clientIP)
-			} else {
-				out.Header.Set("X-Forwarded-For", clientIP)
-			}
-			out.Header.Set("X-Real-IP", clientIP)
+		if prior := in.Header.Get("X-Forwarded-For"); prior != "" {
+			out.Header.Set("X-Forwarded-For", prior+", "+clientIP)
+		} else {
+			out.Header.Set("X-Forwarded-For", clientIP)
 		}
+		out.Header.Set("X-Real-IP", clientIP)
 
 		// Inject custom headers from configuration
 		for k, v := range rc.CustomHeaders {

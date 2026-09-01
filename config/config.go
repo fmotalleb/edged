@@ -40,9 +40,9 @@ type ListenerConfig struct {
 	Protocol            string        `yaml:"protocol" mapstructure:"protocol" validate:"required,oneof=http https"`
 	RedirectToHTTPS     bool          `yaml:"redirect_to_https" mapstructure:"redirect_to_https"`
 	UpstreamSOCKS5Proxy string        `yaml:"upstream_socks5_proxy" mapstructure:"upstream_socks5_proxy"`
-	TLS                  TLSConfig     `yaml:"tls" mapstructure:"tls"`
-	Routes               []RouteConfig `yaml:"routes" mapstructure:"routes" validate:"dive"`
-	ProxyProtocolInbound bool          `yaml:"proxy_protocol_inbound" mapstructure:"proxy_protocol_inbound"`
+	TLS                 TLSConfig     `yaml:"tls" mapstructure:"tls"`
+	Routes              []RouteConfig `yaml:"routes" mapstructure:"routes" validate:"dive"`
+	ProxyProtocol       string        `yaml:"proxy_protocol" mapstructure:"proxy_protocol" default:"none" validate:"omitempty,oneof=none 1 2"`
 
 	ReadTimeout  time.Duration `yaml:"read_timeout" mapstructure:"read_timeout" default:"15s"`
 	WriteTimeout time.Duration `yaml:"write_timeout" mapstructure:"write_timeout" default:"60s"`
@@ -79,8 +79,7 @@ type RouteConfig struct {
 	TLSHandshakeTimeout    time.Duration `yaml:"tls_handshake_timeout" mapstructure:"tls_handshake_timeout" default:"10s"`
 	ExpectContinueTimeout  time.Duration `yaml:"expect_continue_timeout" mapstructure:"expect_continue_timeout" default:"1s"`
 	PassthroughIdleTimeout time.Duration `yaml:"passthrough_idle_timeout" mapstructure:"passthrough_idle_timeout" default:"30s"`
-	ProxyProtocolOutbound  bool          `yaml:"proxy_protocol_outbound" mapstructure:"proxy_protocol_outbound"`
-	ProxyProtocolVersion   string        `yaml:"proxy_protocol_version" mapstructure:"proxy_protocol_version" default:"2" validate:"omitempty,oneof=1 2"`
+	ProxyProtocol          string        `yaml:"proxy_protocol" mapstructure:"proxy_protocol" default:"none" validate:"omitempty,oneof=none 1 2"`
 }
 
 // ACMEConfig defines global settings for Let's Encrypt certificate acquisition.

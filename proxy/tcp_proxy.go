@@ -23,6 +23,22 @@ import (
 	edgedtls "github.com/fmotalleb/edged/crypto/tls"
 )
 
+// proxyProtocolEnabled reports whether the proxy_protocol config value is
+// set to a valid version ("1" or "2"). The default "none" means disabled.
+func proxyProtocolEnabled(pp string) bool {
+	return pp == "1" || pp == "2"
+}
+
+// proxyProtocolVersion parses the proxy_protocol config string and returns
+// the integer version (1 or 2). Returns 0 if the value is invalid.
+func proxyProtocolVersion(pp string) int {
+	v, _ := strconv.Atoi(pp)
+	if v != 1 && v != 2 {
+		return 0
+	}
+	return v
+}
+
 // TLSPassThroughListener is a TCP-level listener that provides both TLS
 // passthrough (for routes with no_tls_termination enabled) and standard TLS
 // termination (for normal routes) on the same port.
@@ -33,16 +49,16 @@ import (
 //   - Pipes the raw encrypted bytes to the upstream server (passthrough)
 //   - Terminates TLS and serves the HTTP request via the router (termination)
 type TLSPassThroughListener struct {
-	address              string
-	routes               []config.RouteConfig
-	handler              http.Handler
-	tlsConfig            *tls.Config
-	baseCtx              context.Context
-	cancel               context.CancelFunc
-	listener             net.Listener
-	mu                   sync.Mutex
-	wg                   sync.WaitGroup
-	proxyProtocolInbound bool
+	address       string
+	routes        []config.RouteConfig
+	handler       http.Handler
+	tlsConfig     *tls.Config
+	baseCtx       context.Context
+	cancel        context.CancelFunc
+	listener      net.Listener
+	mu            sync.Mutex
+	wg            sync.WaitGroup
+	proxyProtocol string // "none", "1", or "2"
 
 	readTimeout  time.Duration
 	writeTimeout time.Duration
@@ -57,20 +73,20 @@ func NewTLSPassThroughListener(
 	handler http.Handler,
 	tlsConfig *tls.Config,
 	readTimeout, writeTimeout, idleTimeout time.Duration,
-	proxyProtocolInbound bool,
+	proxyProtocol string,
 ) *TLSPassThroughListener {
 	ctx, cancel := context.WithCancel(ctx)
 	return &TLSPassThroughListener{
-		address:              addr,
-		routes:               routes,
-		handler:              handler,
-		tlsConfig:            tlsConfig,
-		baseCtx:              ctx,
-		cancel:               cancel,
-		readTimeout:          readTimeout,
-		writeTimeout:         writeTimeout,
-		idleTimeout:          idleTimeout,
-		proxyProtocolInbound: proxyProtocolInbound,
+		address:       addr,
+		routes:        routes,
+		handler:       handler,
+		tlsConfig:     tlsConfig,
+		baseCtx:       ctx,
+		cancel:        cancel,
+		readTimeout:   readTimeout,
+		writeTimeout:  writeTimeout,
+		idleTimeout:   idleTimeout,
+		proxyProtocol: proxyProtocol,
 	}
 }
 
@@ -131,7 +147,7 @@ func (l *TLSPassThroughListener) handleConn(conn net.Conn) {
 	// first Read() on rawConn automatically skips the PROXY protocol header
 	// and RemoteAddr() returns the real client address.
 	var rawConn net.Conn = conn
-	if l.proxyProtocolInbound {
+	if proxyProtocolEnabled(l.proxyProtocol) {
 		rawConn = proxyproto.NewConn(conn)
 	}
 
@@ -271,15 +287,12 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 	// protocol header to the upstream server before piping application data.
 	// The header carries the real client address extracted from the inbound
 	// connection (either from a PROXY protocol header or the direct peer).
-	if route.ProxyProtocolOutbound {
-		version, _ := strconv.Atoi(route.ProxyProtocolVersion)
-		if version != 1 && version != 2 {
-			version = 2
-		}
+	if proxyProtocolEnabled(route.ProxyProtocol) {
+		version := proxyProtocolVersion(route.ProxyProtocol)
 		if err := sendProxyProtocolHeader(upstream, clientAddr, version); err != nil {
 			logger.Error("Failed to send PROXY protocol header to upstream",
 				zap.String("upstream", route.Upstream),
-				zap.String("version", route.ProxyProtocolVersion),
+				zap.String("version", route.ProxyProtocol),
 				zap.Error(err))
 			return
 		}

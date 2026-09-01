@@ -107,7 +107,7 @@ func (s *Server) Start(ctx context.Context) error {
 			if hasPassthroughRoutes(l.Routes) {
 				passthroughSrv := NewTLSPassThroughListener(ctx, l.Address, l.Routes, handler, tlsConfig,
 					l.ReadTimeout, l.WriteTimeout, l.IdleTimeout,
-					l.ProxyProtocolInbound)
+					l.ProxyProtocol)
 
 				s.tlsPassthroughServers = append(s.tlsPassthroughServers, passthroughSrv)
 				go func(name, addr string, p *TLSPassThroughListener) {

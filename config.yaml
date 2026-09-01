@@ -16,6 +16,10 @@ listeners:
     address: "0.0.0.0:80"
     protocol: "http"
     redirect_to_https: true # If true, redirects all incoming HTTP requests to HTTPS (port 443)
+    # PROXY protocol for inbound connections (e.g., from HAProxy, AWS NLB).
+    # Options: "none" (default), "1" (text), "2" (binary).
+    # When enabled, the proxy parses PROXY protocol headers to extract the real client IP.
+    # proxy_protocol: "none"
     routes:
       # Fallback routes if redirect_to_https is false
       - host: "example.com"
@@ -29,6 +33,10 @@ listeners:
     protocol: "https"
     # Optional listener-level SOCKS5 proxy for all routes under this listener
     upstream_socks5_proxy: "" # e.g., "socks5://127.0.0.1:1080"
+    # PROXY protocol for inbound connections (e.g., from HAProxy, AWS NLB).
+    # Options: "none" (default), "1" (text), "2" (binary).
+    # When enabled, the proxy parses PROXY protocol headers before TLS ClientHello.
+    # proxy_protocol: "none"
     tls:
       enabled: true
       use_acme: true
@@ -60,6 +68,9 @@ listeners:
         # Maximum idle time between reads before the TCP proxy connection times out.
         # Defaults to 30s. Set to 0 to disable idle timeout entirely.
         passthrough_idle_timeout: 30s
+        # Send PROXY protocol header to upstream on TLS passthrough.
+        # Options: "none" (default), "1" (text), "2" (binary).
+        # proxy_protocol: "none"
 
       # Route 2: API subdomain with path stripping
       - host: "api.example.com"
