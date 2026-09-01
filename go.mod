@@ -13,6 +13,7 @@ require (
 	github.com/fmotalleb/go-tools v0.1.76
 	github.com/go-acme/lego/v4 v4.35.2
 	github.com/go-playground/validator/v10 v10.23.0
+	github.com/pires/go-proxyproto v0.15.0
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.28.0
 	golang.org/x/net v0.56.0

@@ -9,11 +9,13 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fmotalleb/go-tools/log"
+	"github.com/pires/go-proxyproto"
 	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 
@@ -31,15 +33,16 @@ import (
 //   - Pipes the raw encrypted bytes to the upstream server (passthrough)
 //   - Terminates TLS and serves the HTTP request via the router (termination)
 type TLSPassThroughListener struct {
-	address   string
-	routes    []config.RouteConfig
-	handler   http.Handler
-	tlsConfig *tls.Config
-	baseCtx   context.Context
-	cancel    context.CancelFunc
-	listener  net.Listener
-	mu        sync.Mutex
-	wg        sync.WaitGroup
+	address              string
+	routes               []config.RouteConfig
+	handler              http.Handler
+	tlsConfig            *tls.Config
+	baseCtx              context.Context
+	cancel               context.CancelFunc
+	listener             net.Listener
+	mu                   sync.Mutex
+	wg                   sync.WaitGroup
+	proxyProtocolInbound bool
 
 	readTimeout  time.Duration
 	writeTimeout time.Duration
@@ -54,18 +57,20 @@ func NewTLSPassThroughListener(
 	handler http.Handler,
 	tlsConfig *tls.Config,
 	readTimeout, writeTimeout, idleTimeout time.Duration,
+	proxyProtocolInbound bool,
 ) *TLSPassThroughListener {
 	ctx, cancel := context.WithCancel(ctx)
 	return &TLSPassThroughListener{
-		address:      addr,
-		routes:       routes,
-		handler:      handler,
-		tlsConfig:    tlsConfig,
-		baseCtx:      ctx,
-		cancel:       cancel,
-		readTimeout:  readTimeout,
-		writeTimeout: writeTimeout,
-		idleTimeout:  idleTimeout,
+		address:              addr,
+		routes:               routes,
+		handler:              handler,
+		tlsConfig:            tlsConfig,
+		baseCtx:              ctx,
+		cancel:               cancel,
+		readTimeout:          readTimeout,
+		writeTimeout:         writeTimeout,
+		idleTimeout:          idleTimeout,
+		proxyProtocolInbound: proxyProtocolInbound,
 	}
 }
 
@@ -109,26 +114,41 @@ func (l *TLSPassThroughListener) ListenAndServe() error {
 
 // handleConn processes a single raw TCP connection by extracting the SNI,
 // matching a route, and either proxying raw bytes or terminating TLS.
+//
+// When proxy protocol inbound is enabled on the listener, the connection is
+// first wrapped to detect and parse PROXY protocol v1/v2 headers from
+// upstream load balancers (e.g., HAProxy, AWS NLB). The real client address
+// extracted from the header is then forwarded to upstream servers when
+// proxy_protocol_outbound is enabled on the matched route.
 func (l *TLSPassThroughListener) handleConn(conn net.Conn) {
 	defer l.wg.Done()
 	defer conn.Close()
 
 	logger := log.FromContext(l.baseCtx)
 
+	// Optionally wrap the connection to detect and parse PROXY protocol
+	// v1/v2 headers from an upstream load balancer. After wrapping, the
+	// first Read() on rawConn automatically skips the PROXY protocol header
+	// and RemoteAddr() returns the real client address.
+	var rawConn net.Conn = conn
+	if l.proxyProtocolInbound {
+		rawConn = proxyproto.NewConn(conn)
+	}
+
 	// Read enough bytes to extract the SNI from the TLS ClientHello.
 	peekBuf := make([]byte, 4096)
 
-	if err := conn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+	if err := rawConn.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
 		logger.Debug("Failed to set read deadline on incoming conn", zap.Error(err))
 		return
 	}
-	n, err := conn.Read(peekBuf)
+	n, err := rawConn.Read(peekBuf)
 	if err != nil {
 		logger.Debug("Failed to read ClientHello from incoming conn", zap.Error(err))
 		return
 	}
 	// Clear the deadline once we have data.
-	_ = conn.SetReadDeadline(time.Time{})
+	_ = rawConn.SetReadDeadline(time.Time{})
 
 	data := peekBuf[:n]
 	sni := edgedtls.ExtractSNI(data)
@@ -157,14 +177,19 @@ func (l *TLSPassThroughListener) handleConn(conn net.Conn) {
 		zap.Bool("passthrough", route.NoTLSTermination),
 		zap.String("upstream", route.Upstream))
 
+	// Extract the real client address. When proxy protocol inbound is
+	// enabled, this is the address carried by the PROXY protocol header.
+	// Otherwise it is the direct peer address.
+	clientAddr := rawConn.RemoteAddr()
+
 	// Wrap the connection so that the already-read bytes are replayed first.
 	wrappedConn := &prependReaderConn{
-		Conn:   conn,
-		reader: io.MultiReader(bytes.NewReader(data), conn),
+		Conn:   rawConn,
+		reader: io.MultiReader(bytes.NewReader(data), rawConn),
 	}
 
 	if route.NoTLSTermination {
-		l.proxyTCP(wrappedConn, *route)
+		l.proxyTCP(wrappedConn, *route, clientAddr)
 	} else {
 		l.serveTLS(wrappedConn, *route)
 	}
@@ -188,7 +213,7 @@ func (c *prependReaderConn) Read(b []byte) (int, error) {
 //
 // If the route has upstream_socks5_proxy configured, the upstream connection
 // is established through the SOCKS5 proxy instead of directly.
-func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfig) {
+func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfig, clientAddr net.Addr) {
 	logger := log.FromContext(l.baseCtx)
 
 	// Parse upstream URL consistently with the rest of the codebase.
@@ -241,6 +266,28 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 		return
 	}
 	defer upstream.Close()
+
+	// If proxy protocol outbound is enabled on the route, send a PROXY
+	// protocol header to the upstream server before piping application data.
+	// The header carries the real client address extracted from the inbound
+	// connection (either from a PROXY protocol header or the direct peer).
+	if route.ProxyProtocolOutbound {
+		version, _ := strconv.Atoi(route.ProxyProtocolVersion)
+		if version != 1 && version != 2 {
+			version = 2
+		}
+		if err := sendProxyProtocolHeader(upstream, clientAddr, version); err != nil {
+			logger.Error("Failed to send PROXY protocol header to upstream",
+				zap.String("upstream", route.Upstream),
+				zap.String("version", route.ProxyProtocolVersion),
+				zap.Error(err))
+			return
+		}
+		logger.Debug("Sent PROXY protocol header to upstream",
+			zap.String("upstream", route.Upstream),
+			zap.Int("version", version),
+			zap.String("client_addr", clientAddr.String()))
+	}
 
 	logger.Debug("TLS passthrough: proxying TCP connection",
 		zap.String("upstream", route.Upstream),
@@ -329,6 +376,22 @@ func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer,
 func isTimeoutError(err error) bool {
 	e, ok := err.(net.Error)
 	return ok && e.Timeout()
+}
+
+// sendProxyProtocolHeader writes a PROXY protocol header (v1 or v2) to the
+// given connection, carrying the source (client) and destination (upstream)
+// addresses. This should be called immediately after establishing the upstream
+// connection, before any application data is sent.
+//
+// Version 1 sends a human-readable ASCII header:
+//   PROXY TCP4 <src_ip> <dst_ip> <src_port> <dst_port>\r\n
+// Version 2 sends a binary header with additional proxy information.
+func sendProxyProtocolHeader(conn net.Conn, clientAddr net.Addr, version int) error {
+	upstreamAddr := conn.RemoteAddr()
+
+	header := proxyproto.HeaderProxyFromAddrs(byte(version), clientAddr, upstreamAddr)
+	_, err := header.WriteTo(conn)
+	return err
 }
 
 // serveTLS terminates TLS on the connection and serves the HTTP request through
