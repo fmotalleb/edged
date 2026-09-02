@@ -350,7 +350,7 @@ func newACMETransport(ctx context.Context, cfg config.ACMEConfig) (*http.Transpo
 
 	// Disable ACME server certificate verification when explicitly set to false.
 	if cfg.VerifySSL != nil && !*cfg.VerifySSL {
-		tlsConfig.InsecureSkipVerify = true //nolint:gosec
+		tlsConfig.InsecureSkipVerify = true
 		logger.Warn("ACME server TLS verification is disabled (VERIFY_SSL_ACME=false)")
 	}
 

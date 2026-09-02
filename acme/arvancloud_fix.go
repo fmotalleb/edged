@@ -26,9 +26,11 @@ type arvancloudFixProvider struct {
 	httpClient *http.Client
 }
 
-// compile-time interface checks
-var _ challenge.Provider = (*arvancloudFixProvider)(nil)
-var _ challenge.ProviderTimeout = (*arvancloudFixProvider)(nil)
+// compile-time interface checks.
+var (
+	_ challenge.Provider        = (*arvancloudFixProvider)(nil)
+	_ challenge.ProviderTimeout = (*arvancloudFixProvider)(nil)
+)
 
 // newArvancloudFixProvider creates a new arvancloudFixProvider that wraps the given
 // lego arvancloud provider. httpClient is used for the extra API calls; if nil,

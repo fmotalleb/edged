@@ -118,7 +118,7 @@ func (s *Server) Start(ctx context.Context) error {
 					if err := p.ListenAndServe(); err != nil {
 						logger.Fatal("Fatal TLS passthrough proxy error", zap.String("listener", name), zap.Error(err))
 					}
-					}(l.Name, l.Address, passthroughSrv)
+				}(l.Name, l.Address, passthroughSrv)
 			} else {
 				srv.TLSConfig = tlsConfig
 

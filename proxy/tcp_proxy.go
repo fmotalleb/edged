@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -146,7 +147,7 @@ func (l *TLSPassThroughListener) handleConn(conn net.Conn) {
 	// v1/v2 headers from an upstream load balancer. After wrapping, the
 	// first Read() on rawConn automatically skips the PROXY protocol header
 	// and RemoteAddr() returns the real client address.
-	var rawConn net.Conn = conn
+	rawConn := conn
 	if proxyProtocolEnabled(l.proxyProtocol) {
 		rawConn = proxyproto.NewConn(conn)
 	}
@@ -315,19 +316,19 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 
 	// Use context-aware copy so shutdown cancels in-flight transfers.
 	// A read deadline is periodically applied so that a blocked Read() does
-	// not prevent goroutine shutdown when the context is cancelled.
+	// not prevent goroutine shutdown when the context is canceled.
 	var wg sync.WaitGroup
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		if _, err := l.copyContext(l.baseCtx, upstream, conn, idleTimeout); err != nil && err != io.EOF && err != context.Canceled {
+		if _, err := l.copyContext(l.baseCtx, upstream, conn, idleTimeout); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 			logger.Debug("TLS passthrough upstream write error", zap.Error(err))
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if _, err := l.copyContext(l.baseCtx, conn, upstream, idleTimeout); err != nil && err != io.EOF && err != context.Canceled {
+		if _, err := l.copyContext(l.baseCtx, conn, upstream, idleTimeout); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 			logger.Debug("TLS passthrough downstream write error", zap.Error(err))
 		}
 	}()
@@ -336,7 +337,7 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 }
 
 // copyContext copies from src to dst until either EOF is reached on src,
-// an error occurs, or ctx is cancelled. It returns the number of bytes
+// an error occurs, or ctx is canceled. It returns the number of bytes
 // copied and the first error encountered.
 //
 // idleTimeout controls how long the copy waits between reads before
@@ -387,7 +388,8 @@ func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer,
 
 // isTimeoutError reports whether err is a net.Error with Timeout() == true.
 func isTimeoutError(err error) bool {
-	e, ok := err.(net.Error)
+	var e net.Error
+	ok := errors.As(err, &e)
 	return ok && e.Timeout()
 }
 
@@ -397,7 +399,9 @@ func isTimeoutError(err error) bool {
 // connection, before any application data is sent.
 //
 // Version 1 sends a human-readable ASCII header:
-//   PROXY TCP4 <src_ip> <dst_ip> <src_port> <dst_port>\r\n
+//
+//	PROXY TCP4 <src_ip> <dst_ip> <src_port> <dst_port>\r\n
+//
 // Version 2 sends a binary header with additional proxy information.
 func sendProxyProtocolHeader(conn net.Conn, clientAddr net.Addr, version int) error {
 	upstreamAddr := conn.RemoteAddr()
@@ -450,7 +454,7 @@ func (l *singleConnListener) Accept() (net.Conn, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.used || l.conn == nil {
-		return nil, fmt.Errorf("listener closed")
+		return nil, errors.New("listener closed")
 	}
 	l.used = true
 	return l.conn, nil
