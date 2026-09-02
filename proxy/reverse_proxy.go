@@ -328,7 +328,7 @@ func (r *Router) createDirector(target *url.URL, rc config.RouteConfig) func(*ht
 func upstreamTLSConfig(verifySSL *bool) *tls.Config {
 	if verifySSL != nil && !*verifySSL {
 		return &tls.Config{
-			InsecureSkipVerify: true, //nolint:gosec
+			InsecureSkipVerify: true, //nolint:gosec // verify_ssl explicitly set to false by user
 		}
 	}
 	return nil

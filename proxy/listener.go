@@ -75,8 +75,7 @@ func (s *Server) Start(ctx context.Context) error {
 
 		if l.Protocol == "https" {
 			tlsConfig := &tls.Config{
-				MinVersion:               tls.VersionTLS12,
-				PreferServerCipherSuites: true,
+				MinVersion: tls.VersionTLS12,
 			}
 
 			if l.TLS.Enabled {
@@ -123,7 +122,7 @@ func (s *Server) Start(ctx context.Context) error {
 				srv.TLSConfig = tlsConfig
 
 				if proxyProtocolEnabled(l.ProxyProtocol) {
-					rawListener, err := net.Listen("tcp", l.Address)
+					rawListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", l.Address)
 					if err != nil {
 						return fmt.Errorf("tcp listen on %s for PROXY protocol: %w", l.Address, err)
 					}
@@ -150,7 +149,7 @@ func (s *Server) Start(ctx context.Context) error {
 			}
 		} else {
 			if proxyProtocolEnabled(l.ProxyProtocol) {
-				rawListener, err := net.Listen("tcp", l.Address)
+				rawListener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", l.Address)
 				if err != nil {
 					return fmt.Errorf("tcp listen on %s for PROXY protocol: %w", l.Address, err)
 				}

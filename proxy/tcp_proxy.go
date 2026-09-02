@@ -40,6 +40,16 @@ func proxyProtocolVersion(pp string) int {
 	return v
 }
 
+const (
+	// defaultPassthroughIdleTimeout is the fallback idle timeout when the route
+	// does not configure passthrough_idle_timeout.
+	defaultPassthroughIdleTimeout = 30 * time.Second
+
+	// defaultUpstreamDialTimeout is the timeout for dialing the upstream
+	// connection in TLS passthrough mode.
+	defaultUpstreamDialTimeout = 10 * time.Second
+)
+
 // TLSPassThroughListener is a TCP-level listener that provides both TLS
 // passthrough (for routes with no_tls_termination enabled) and standard TLS
 // termination (for normal routes) on the same port.
@@ -93,7 +103,7 @@ func NewTLSPassThroughListener(
 
 // ListenAndServe starts the raw TCP listener and begins accepting connections.
 func (l *TLSPassThroughListener) ListenAndServe() error {
-	listener, err := net.Listen("tcp", l.address)
+	listener, err := (&net.ListenConfig{}).Listen(l.baseCtx, "tcp", l.address)
 	if err != nil {
 		return fmt.Errorf("tcp listen on %s: %w", l.address, err)
 	}
@@ -110,7 +120,7 @@ func (l *TLSPassThroughListener) ListenAndServe() error {
 		<-l.baseCtx.Done()
 		l.mu.Lock()
 		if l.listener != nil {
-			l.listener.Close()
+			_ = l.listener.Close()
 		}
 		l.mu.Unlock()
 	}()
@@ -273,7 +283,7 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 
 		upstream, err = dialer.Dial("tcp", upstreamAddr)
 	} else {
-		upstream, err = net.DialTimeout("tcp", upstreamAddr, 10*time.Second)
+		upstream, err = (&net.Dialer{Timeout: defaultUpstreamDialTimeout}).DialContext(l.baseCtx, "tcp", upstreamAddr)
 	}
 	if err != nil {
 		logger.Error("Failed to connect to upstream for TLS passthrough",
@@ -311,7 +321,7 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 	// default of 30s set by config defaults.
 	idleTimeout := route.PassthroughIdleTimeout
 	if idleTimeout <= 0 {
-		idleTimeout = 30 * time.Second
+		idleTimeout = defaultPassthroughIdleTimeout
 	}
 
 	// Use context-aware copy so shutdown cancels in-flight transfers.
@@ -322,13 +332,13 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 
 	go func() {
 		defer wg.Done()
-		if _, err := l.copyContext(l.baseCtx, upstream, conn, idleTimeout); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+		if err := l.copyContext(l.baseCtx, upstream, conn, idleTimeout); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 			logger.Debug("TLS passthrough upstream write error", zap.Error(err))
 		}
 	}()
 	go func() {
 		defer wg.Done()
-		if _, err := l.copyContext(l.baseCtx, conn, upstream, idleTimeout); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
+		if err := l.copyContext(l.baseCtx, conn, upstream, idleTimeout); err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, context.Canceled) {
 			logger.Debug("TLS passthrough downstream write error", zap.Error(err))
 		}
 	}()
@@ -344,9 +354,8 @@ func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfi
 // treating the connection as idle. A timeout fires the read deadline,
 // which wakes up the loop to check ctx.Done() for graceful shutdown.
 // If idleTimeout is zero, no read deadline is set (no idle timeout).
-func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer, src io.Reader, idleTimeout time.Duration) (int64, error) {
+func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer, src io.Reader, idleTimeout time.Duration) error {
 	buf := make([]byte, 32*1024)
-	var written int64
 
 	// If src supports deadlines, apply the idle timeout periodically.
 	srcConn, canDeadline := src.(net.Conn)
@@ -360,16 +369,14 @@ func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer,
 
 		select {
 		case <-ctx.Done():
-			return written, ctx.Err()
+			return ctx.Err()
 		default:
 		}
 
 		nr, rerr := src.Read(buf)
 		if nr > 0 {
-			nw, werr := dst.Write(buf[:nr])
-			written += int64(nw)
-			if werr != nil {
-				return written, werr
+			if _, werr := dst.Write(buf[:nr]); werr != nil {
+				return werr
 			}
 		}
 		if rerr != nil {
@@ -381,7 +388,7 @@ func (l *TLSPassThroughListener) copyContext(ctx context.Context, dst io.Writer,
 			if rerr == io.EOF {
 				rerr = nil
 			}
-			return written, rerr
+			return rerr
 		}
 	}
 }
@@ -406,7 +413,7 @@ func isTimeoutError(err error) bool {
 func sendProxyProtocolHeader(conn net.Conn, clientAddr net.Addr, version int) error {
 	upstreamAddr := conn.RemoteAddr()
 
-	header := proxyproto.HeaderProxyFromAddrs(byte(version), clientAddr, upstreamAddr)
+	header := proxyproto.HeaderProxyFromAddrs(uint8(version), clientAddr, upstreamAddr) //nolint:gosec // version is validated to 1 or 2 by proxyProtocolVersion
 	_, err := header.WriteTo(conn)
 	return err
 }
@@ -422,7 +429,7 @@ func (l *TLSPassThroughListener) serveTLS(conn net.Conn, _ config.RouteConfig) {
 
 	tlsConn := tls.Server(conn, l.tlsConfig)
 
-	if err := tlsConn.Handshake(); err != nil {
+	if err := tlsConn.HandshakeContext(l.baseCtx); err != nil {
 		log.FromContext(l.baseCtx).Debug("TLS handshake failed", zap.Error(err))
 		return
 	}
@@ -498,7 +505,7 @@ func (l *TLSPassThroughListener) Shutdown() error {
 
 	l.mu.Lock()
 	if l.listener != nil {
-		l.listener.Close()
+		_ = l.listener.Close()
 	}
 	l.mu.Unlock()
 

@@ -8,6 +8,11 @@ const (
 
 	// HandshakeType(8 bit) + Length(24 bit) + Version(16 bit) + Random (256 bit).
 	tlsHelloSize = 1 + 3 + 2 + 32
+
+	// sniMinHeaderSize is the minimum size of a valid SNI extension before
+	// the server name length field: list length (2) + name type (1) +
+	// name length (2).
+	sniMinHeaderSize = 5
 )
 
 func ExtractSNI(data []byte) []byte {
@@ -91,7 +96,7 @@ func parseSNIExtension(sniData []byte) []byte {
 	if nameType != 0 {
 		return nil
 	}
-	nameLen := int(binary.BigEndian.Uint16(sniData[3:5])) + 5
+	nameLen := int(binary.BigEndian.Uint16(sniData[3:5])) + sniMinHeaderSize
 	if nameLen > len(sniData) {
 		return nil
 	}
