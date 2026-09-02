@@ -234,6 +234,36 @@ func (c *prependReaderConn) Read(b []byte) (int, error) {
 	return c.reader.Read(b)
 }
 
+// dialUpstream establishes a TCP connection to the upstream server.
+// When upstreamSOCKS5Proxy is set, the connection is tunneled through the
+// SOCKS5 proxy; otherwise a direct dial is used.
+func (l *TLSPassThroughListener) dialUpstream(upstream, upstreamSOCKS5Proxy string) (net.Conn, error) {
+	upstreamURL, err := url.Parse(upstream)
+	if err != nil {
+		return nil, fmt.Errorf("invalid upstream URL '%s': %w", upstream, err)
+	}
+
+	// Use Host portion (host:port) for TCP dialing.
+	upstreamAddr := upstreamURL.Host
+	if upstreamAddr == "" {
+		upstreamAddr = upstreamURL.Path // fallback for bare "host:port" strings
+	}
+
+	if upstreamSOCKS5Proxy != "" {
+		proxyURL, proxyErr := url.Parse(upstreamSOCKS5Proxy)
+		if proxyErr != nil {
+			return nil, fmt.Errorf("invalid upstream_socks5_proxy '%s': %w", upstreamSOCKS5Proxy, proxyErr)
+		}
+		dialer, dialerErr := proxy.FromURL(proxyURL, proxy.Direct)
+		if dialerErr != nil {
+			return nil, fmt.Errorf("failed to create SOCKS5 dialer for '%s': %w", upstreamSOCKS5Proxy, dialerErr)
+		}
+		return dialer.Dial("tcp", upstreamAddr)
+	}
+
+	return (&net.Dialer{Timeout: defaultUpstreamDialTimeout}).DialContext(l.baseCtx, "tcp", upstreamAddr)
+}
+
 // proxyTCP performs a raw TCP proxy (TLS passthrough). It dials the upstream
 // server and pipes data bidirectionally. The wrapped connection replays the
 // ClientHello first, so the upstream TLS layer receives the complete handshake.
@@ -243,48 +273,7 @@ func (c *prependReaderConn) Read(b []byte) (int, error) {
 func (l *TLSPassThroughListener) proxyTCP(conn net.Conn, route config.RouteConfig, clientAddr net.Addr) {
 	logger := log.FromContext(l.baseCtx)
 
-	// Parse upstream URL consistently with the rest of the codebase.
-	upstreamURL, err := url.Parse(route.Upstream)
-	if err != nil {
-		logger.Error("Invalid upstream URL for TLS passthrough",
-			zap.String("upstream", route.Upstream),
-			zap.Error(err))
-		return
-	}
-
-	// Use Host portion (host:port) for TCP dialing.
-	upstreamAddr := upstreamURL.Host
-	if upstreamAddr == "" {
-		upstreamAddr = upstreamURL.Path // fallback for bare "host:port" strings
-	}
-
-	var upstream net.Conn
-	if route.UpstreamSOCKS5Proxy != "" {
-		// Dial via SOCKS5 proxy.
-		proxyURL, proxyErr := url.Parse(route.UpstreamSOCKS5Proxy)
-		if proxyErr != nil {
-			logger.Error("Invalid upstream_socks5_proxy URL",
-				zap.String("socks5_proxy", route.UpstreamSOCKS5Proxy),
-				zap.Error(proxyErr))
-			return
-		}
-
-		logger.Debug("TLS passthrough: dialing upstream via SOCKS5",
-			zap.String("upstream", route.Upstream),
-			zap.String("socks5_proxy", route.UpstreamSOCKS5Proxy))
-
-		dialer, dialerErr := proxy.FromURL(proxyURL, proxy.Direct)
-		if dialerErr != nil {
-			logger.Error("Failed to create SOCKS5 dialer",
-				zap.String("socks5_proxy", route.UpstreamSOCKS5Proxy),
-				zap.Error(dialerErr))
-			return
-		}
-
-		upstream, err = dialer.Dial("tcp", upstreamAddr)
-	} else {
-		upstream, err = (&net.Dialer{Timeout: defaultUpstreamDialTimeout}).DialContext(l.baseCtx, "tcp", upstreamAddr)
-	}
+	upstream, err := l.dialUpstream(route.Upstream, route.UpstreamSOCKS5Proxy)
 	if err != nil {
 		logger.Error("Failed to connect to upstream for TLS passthrough",
 			zap.String("upstream", route.Upstream),
