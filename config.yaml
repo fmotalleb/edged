@@ -59,6 +59,15 @@ listeners:
         idle_conn_timeout: 90s
         tls_handshake_timeout: 10s
         expect_continue_timeout: 1s
+        # Real-IP header configuration:
+        # Only trust the header when the request comes from an edge proxy
+        # within the listed CIDR ranges. Without trusted_edge_proxy_ips,
+        # the header is ignored and RemoteAddr is used directly.
+        # real_ip_header: "CF-Connecting-IP"
+        # trusted_edge_proxy_ips:
+        #   - "10.0.0.0/8"
+        #   - "173.245.48.0/20"
+
         custom_headers:
           X-Proxy-Engine: "Go-Advanced-Proxy"
 

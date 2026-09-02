@@ -80,6 +80,19 @@ type RouteConfig struct {
 	ExpectContinueTimeout  time.Duration `yaml:"expect_continue_timeout" mapstructure:"expect_continue_timeout" default:"1s"`
 	PassthroughIdleTimeout time.Duration `yaml:"passthrough_idle_timeout" mapstructure:"passthrough_idle_timeout" default:"30s"`
 	ProxyProtocol          string        `yaml:"proxy_protocol" mapstructure:"proxy_protocol" default:"none" validate:"omitempty,oneof=none 1 2"`
+
+	// RealIPHeader is the HTTP header to read the real client IP from.
+	// When empty, no real-IP header is trusted — the direct connection
+	// RemoteAddr is used as the client IP.
+	// Common values: "CF-Connecting-IP", "True-Client-IP", "X-Real-IP", "X-Forwarded-For".
+	RealIPHeader string `yaml:"real_ip_header" mapstructure:"real_ip_header"`
+
+	// TrustedEdgeProxyIPs is a list of CIDR ranges (e.g. "10.0.0.0/8",
+	// "172.16.0.0/12") identifying edge proxy / load balancer addresses.
+	// The real_ip_header is ONLY trusted when the direct connection's
+	// RemoteAddr falls within one of these ranges. Without this, spoofed
+	// headers from untrusted clients are ignored.
+	TrustedEdgeProxyIPs []string `yaml:"trusted_edge_proxy_ips" mapstructure:"trusted_edge_proxy_ips"`
 }
 
 // ACMEConfig defines global settings for Let's Encrypt certificate acquisition.

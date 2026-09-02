@@ -19,6 +19,52 @@ import (
 	"github.com/fmotalleb/edged/config"
 )
 
+// trustedEdgeProxyNets caches parsed CIDR networks per route to avoid
+// re-parsing on every request. A nil value means no CIDRs were configured.
+var (
+	trustedCacheMu sync.Mutex
+	trustedCache   = make(map[string][]*net.IPNet)
+)
+
+// parseTrustedEdgeProxyNets returns cached parsed CIDR networks for the
+// given list of CIDR strings. If the list is empty it returns nil.
+func parseTrustedEdgeProxyNets(cidrs []string) []*net.IPNet {
+	if len(cidrs) == 0 {
+		return nil
+	}
+	// Use a simple composite key from the CIDR slice.
+	key := strings.Join(cidrs, ",")
+	trustedCacheMu.Lock()
+	defer trustedCacheMu.Unlock()
+	if cached, ok := trustedCache[key]; ok {
+		return cached
+	}
+	nets := make([]*net.IPNet, 0, len(cidrs))
+	for _, cidr := range cidrs {
+		_, ipNet, err := net.ParseCIDR(strings.TrimSpace(cidr))
+		if err != nil {
+			continue // skip invalid CIDRs silently
+		}
+		nets = append(nets, ipNet)
+	}
+	trustedCache[key] = nets
+	return nets
+}
+
+// isIPInTrustedRange checks whether ip falls within any of the provided
+// CIDR networks. If networks is empty, returns false (nothing is trusted).
+func isIPInTrustedRange(ip net.IP, networks []*net.IPNet) bool {
+	if len(networks) == 0 {
+		return false
+	}
+	for _, n := range networks {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 // Router manages routing rules and ReverseProxy instances for a listener.
 type Router struct {
 	listenerName string
@@ -197,37 +243,35 @@ func (r *Router) matchHost(requestHost, routeHost string) bool {
 }
 
 // resolveClientIP extracts the real client IP from the incoming request.
-// It checks trusted proxy headers in order of priority: CF-Connecting-IP
-// (Cloudflare), True-Client-IP (Akamai), X-Real-IP, and the first IP in
-// X-Forwarded-For. If none of these headers are present, it falls back to
-// the direct connection RemoteAddr. This allows load balancers and CDNs to
-// communicate the original client IP even when the proxy is not PROXY-protocol-aware.
-func resolveClientIP(req *http.Request) string {
-	// Check Cloudflare's CF-Connecting-IP header first.
-	if ip := strings.TrimSpace(req.Header.Get("CF-Connecting-IP")); ip != "" {
-		return ip
+//
+// When rc.RealIPHeader is set and the direct connection RemoteAddr falls
+// within one of rc.TrustedEdgeProxyIPs, the header value is trusted.
+// Otherwise the direct connection RemoteAddr is returned as-is.
+//
+// If no RealIPHeader is configured, or no trusted CIDRs are provided,
+// the direct connection RemoteAddr is always returned.
+func resolveClientIP(req *http.Request, rc config.RouteConfig) string {
+	// Always extract the raw connecting IP first.
+	connectingIP := req.RemoteAddr
+	if host, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
+		connectingIP = host
 	}
-	// Check Akamai's True-Client-IP header.
-	if ip := strings.TrimSpace(req.Header.Get("True-Client-IP")); ip != "" {
-		return ip
-	}
-	// Check X-Real-IP header.
-	if ip := strings.TrimSpace(req.Header.Get("X-Real-IP")); ip != "" {
-		return ip
-	}
-	// Check X-Forwarded-For: take the first (leftmost) IP, which is the original client.
-	if xff := req.Header.Get("X-Forwarded-For"); xff != "" {
-		// X-Forwarded-For format: "client, proxy1, proxy2"
-		if idx := strings.IndexByte(xff, ','); idx != -1 {
-			return strings.TrimSpace(xff[:idx])
+
+	// Only trust the real-ip header when both header name and trusted CIDRs
+	// are configured AND the connecting IP is within the trusted range.
+	if rc.RealIPHeader != "" {
+		networks := parseTrustedEdgeProxyNets(rc.TrustedEdgeProxyIPs)
+		if len(networks) > 0 {
+			parsedIP := net.ParseIP(connectingIP)
+			if parsedIP != nil && isIPInTrustedRange(parsedIP, networks) {
+				if ip := strings.TrimSpace(req.Header.Get(rc.RealIPHeader)); ip != "" {
+					return ip
+				}
+			}
 		}
-		return strings.TrimSpace(xff)
 	}
-	// Fallback to the direct connection RemoteAddr.
-	if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-		return clientIP
-	}
-	return req.RemoteAddr
+
+	return connectingIP
 }
 
 // createDirector returns a Rewrite function for ReverseProxy. It reads the
@@ -235,10 +279,9 @@ func resolveClientIP(req *http.Request) string {
 // is what actually gets sent upstream, so all header/path/host changes must
 // be applied there.
 //
-// Client IP resolution: the real client IP is resolved from trusted proxy
-// headers (CF-Connecting-IP, True-Client-IP, X-Real-IP, X-Forwarded-For)
-// with fallback to RemoteAddr. This header-based IP overrides any PROXY
-// protocol address when both are present.
+// Client IP resolution: the real client IP is resolved from a trusted
+// proxy header (configured via rc.RealIPHeader) only when the connecting
+// IP is within rc.TrustedEdgeProxyIPs. Otherwise RemoteAddr is used.
 func (r *Router) createDirector(target *url.URL, rc config.RouteConfig) func(*httputil.ProxyRequest) {
 	return func(pr *httputil.ProxyRequest) {
 		// Equivalent of the legacy Director: sets scheme/host and joins the
@@ -248,9 +291,9 @@ func (r *Router) createDirector(target *url.URL, rc config.RouteConfig) func(*ht
 		out := pr.Out
 		in := pr.In
 
-		// Resolve the real client IP from trusted proxy headers. This
-		// overrides the PROXY protocol address when headers are present.
-		clientIP := resolveClientIP(in)
+		// Resolve the real client IP. Only the configured header is trusted,
+		// and only when the connecting IP is in the trusted edge proxy range.
+		clientIP := resolveClientIP(in, rc)
 
 		// Set standard forwarding headers
 		out.Header.Set("X-Forwarded-Proto", r.protocol)
