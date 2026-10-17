@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,7 +31,7 @@ var validate = func() *validator.Validate {
 type Config struct {
 	DefaultUpstreamSOCKS5Proxy string           `yaml:"default_upstream_socks5_proxy" mapstructure:"default_upstream_socks5_proxy"`
 	Listeners                  []ListenerConfig `yaml:"listeners" mapstructure:"listeners" validate:"required,min=1,dive"`
-	ACME                       ACMEConfig       `yaml:"acme" mapstructure:"acme" validate:"-"`
+	ACME                       ACMEConfig       `yaml:"acme" mapstructure:"acme"`
 }
 
 // ListenerConfig defines a network listener (e.g., HTTP or HTTPS).
@@ -99,24 +100,56 @@ type RouteConfig struct {
 // Note: Email is only *conditionally* required (when a listener uses ACME), so it
 // isn't marked `required` here; that's enforced in configStructLevelValidation.
 type ACMEConfig struct {
-	Email              string            `yaml:"email" mapstructure:"email" validate:"omitempty,email"`
-	DirectoryURL       string            `yaml:"directory_url" mapstructure:"directory_url" default:"https://acme-v02.api.letsencrypt.org/directory" validate:"omitempty,url"`
-	VerifySSL          *bool             `yaml:"verify_ssl" mapstructure:"verify_ssl" env:"VERIFY_SSL_ACME"`
-	SOCKS5Proxy        string            `yaml:"socks5_proxy" mapstructure:"socks5_proxy"`
-	StoragePath        string            `yaml:"storage_path" mapstructure:"storage_path" default:"./acme_storage"`
-	RenewBeforeDays    int               `yaml:"renew_before_days" mapstructure:"renew_before_days" default:"30" validate:"gte=1"`
-	CheckIntervalHours int               `yaml:"check_interval_hours" mapstructure:"check_interval_hours" default:"24" validate:"gte=1"`
-	ClientTimeout      time.Duration     `yaml:"client_timeout" mapstructure:"client_timeout" default:"40s"`
-	DNSProvider        DNSProviderConfig `yaml:"dns_provider" mapstructure:"dns_provider"`
+	Email              string              `yaml:"email" mapstructure:"email" validate:"omitempty,email"`
+	DirectoryURL       string              `yaml:"directory_url" mapstructure:"directory_url" default:"https://acme-v02.api.letsencrypt.org/directory" validate:"omitempty,url"`
+	VerifySSL          *bool               `yaml:"verify_ssl" mapstructure:"verify_ssl" env:"VERIFY_SSL_ACME"`
+	SOCKS5Proxy        string              `yaml:"socks5_proxy" mapstructure:"socks5_proxy"`
+	StoragePath        string              `yaml:"storage_path" mapstructure:"storage_path" default:"./acme_storage"`
+	RenewBeforeDays    int                 `yaml:"renew_before_days" mapstructure:"renew_before_days" default:"30" validate:"gte=1"`
+	CheckIntervalHours int                 `yaml:"check_interval_hours" mapstructure:"check_interval_hours" default:"24" validate:"gte=1"`
+	ClientTimeout      time.Duration       `yaml:"client_timeout" mapstructure:"client_timeout" default:"40s"`
+	DNSProviders       []DNSProviderConfig `yaml:"dns_providers" mapstructure:"dns_providers" validate:"dive"`
 }
 
-// DNSProviderConfig defines settings for DNS-01 challenge providers.
+// DNSProviderConfig defines settings for one DNS-01 challenge provider.
+// Each entry selects the domains it serves through glob match patterns.
 type DNSProviderConfig struct {
-	Name                 string           `yaml:"name" mapstructure:"name" default:"cloudflare" validate:"omitempty,oneof=arvancloud cloudflare"`
+	// Match lists glob patterns (see MatchDomain) of the domains served by
+	// this provider, e.g. "example.org", "*.cdn.example.org" or "*".
+	// Entries are evaluated in configuration order and the first entry whose
+	// patterns hit a domain wins. The first entry needs no patterns: it is
+	// the default provider for domains no other entry matches, and match
+	// patterns on entries after the first are required so they stay reachable.
+	Match                []string         `yaml:"match" mapstructure:"match"`
+	Name                 string           `yaml:"name" mapstructure:"name" validate:"required,oneof=arvancloud cloudflare"`
 	UseSOCKS5            bool             `yaml:"use_socks5" mapstructure:"use_socks5"`
 	RecursiveNameservers []string         `yaml:"recursive_nameservers" mapstructure:"recursive_nameservers"`
 	ArvanCloud           ArvanCloudConfig `yaml:"arvancloud" mapstructure:"arvancloud"`
 	Cloudflare           CloudflareConfig `yaml:"cloudflare" mapstructure:"cloudflare"`
+}
+
+// MatchesDomain reports whether any of the entry's glob patterns selects it
+// for the given domain. It does not consider the entry's position, so the
+// default entry (the first one) reports false for domains outside its match
+// patterns even though it still serves them as the fallback.
+func (p DNSProviderConfig) MatchesDomain(domain string) bool {
+	return MatchGlobs(p.Match, domain)
+}
+
+// SelectDNSProvider returns the index of the provider entry selected for the
+// domain: the first entry whose match globs hit the domain, falling back to
+// the first configured entry (the default provider). It returns -1 when no
+// provider is configured.
+func SelectDNSProvider(providers []DNSProviderConfig, domain string) int {
+	if len(providers) == 0 {
+		return -1
+	}
+	for i := range providers {
+		if providers[i].MatchesDomain(domain) {
+			return i
+		}
+	}
+	return 0
 }
 
 // ArvanCloudConfig contains credentials and timings for ArvanCloud DNS.
@@ -157,21 +190,16 @@ func listenerStructLevelValidation(sl validator.StructLevel) {
 }
 
 // configStructLevelValidation handles cross-cutting rules that span multiple
-// sub-structs (e.g. ACME email required when any listener uses ACME, DNS
-// provider credentials required when wildcard domains are requested).
+// sub-structs (e.g. ACME email required when any listener uses ACME, and DNS
+// provider coverage/credentials for every domain served via DNS-01).
 func configStructLevelValidation(sl validator.StructLevel) {
 	c := sl.Current().Interface().(Config)
 
 	usesACME := false
-	needsWildcard := false
 	for _, l := range c.Listeners {
 		if l.TLS.UseACME {
 			usesACME = true
-			for _, d := range l.TLS.Domains {
-				if strings.HasPrefix(d, "*.") {
-					needsWildcard = true
-				}
-			}
+			break
 		}
 	}
 
@@ -179,41 +207,58 @@ func configStructLevelValidation(sl validator.StructLevel) {
 		sl.ReportError(c.ACME.Email, "ACME.Email", "Email", "required_with_acme", "")
 	}
 
-	if !needsWildcard {
+	if len(c.acmeDomains()) == 0 {
 		return
 	}
 
-	providerName := strings.ToLower(strings.TrimSpace(c.ACME.DNSProvider.Name))
-	switch providerName {
+	validateDNSProviders(sl, &c.ACME)
+}
+
+// validateDNSProviders checks the acme.dns_providers list. Because only the
+// DNS-01 solver is wired, at least one entry is mandatory whenever a listener
+// acquires certificates, every entry must be selectable (match globs) and
+// parseable, and every entry must hold working credentials for its provider —
+// a broken entry otherwise only fails during certificate issuance.
+func validateDNSProviders(sl validator.StructLevel, acme *ACMEConfig) {
+	if len(acme.DNSProviders) == 0 {
+		sl.ReportError(acme.DNSProviders, "ACME.DNSProviders", "DNSProviders", "dns_provider_required", "")
+		return
+	}
+
+	for i := range acme.DNSProviders {
+		p := acme.DNSProviders[i]
+		ns := fmt.Sprintf("ACME.DNSProviders[%d]", i)
+
+		// Only the first entry may omit match: it is the default provider.
+		// A later entry without patterns could never be selected.
+		if i > 0 && len(p.Match) == 0 {
+			sl.ReportError(p.Match, ns+".Match", "Match", "match_required", "")
+		}
+
+		for _, pattern := range p.Match {
+			if err := ValidateGlobPattern(pattern); err != nil {
+				sl.ReportError(pattern, ns+".Match", "Match", "invalid_domain_pattern", pattern)
+				break
+			}
+		}
+
+		validateDNSProviderCredentials(sl, p, ns)
+	}
+}
+
+// validateDNSProviderCredentials reports missing credentials for one
+// acme.dns_providers entry.
+func validateDNSProviderCredentials(sl validator.StructLevel, p DNSProviderConfig, ns string) {
+	switch p.Name {
 	case "arvancloud":
-		if c.ACME.DNSProvider.ArvanCloud.APIKey == "" {
-			sl.ReportError(
-				c.ACME.DNSProvider.ArvanCloud.APIKey,
-				"ACME.DNSProvider.ArvanCloud.APIKey",
-				"APIKey",
-				"required_for_wildcard",
-				"",
-			)
+		if p.ArvanCloud.APIKey == "" {
+			sl.ReportError(p.ArvanCloud.APIKey, ns+".ArvanCloud.APIKey", "APIKey", "dns_api_key_required", "")
 		}
 	case "cloudflare":
-		cf := c.ACME.DNSProvider.Cloudflare
+		cf := p.Cloudflare
 		if cf.APIToken == "" && (cf.AuthEmail == "" || cf.AuthKey == "") {
-			sl.ReportError(
-				cf.APIToken,
-				"ACME.DNSProvider.Cloudflare",
-				"Cloudflare",
-				"credentials_required_for_wildcard",
-				"",
-			)
+			sl.ReportError(cf.APIToken, ns+".Cloudflare", "Cloudflare", "dns_credentials_required", "")
 		}
-	default:
-		sl.ReportError(
-			c.ACME.DNSProvider.Name,
-			"ACME.DNSProvider.Name",
-			"Name",
-			"unsupported_provider",
-			"",
-		)
 	}
 }
 
@@ -327,19 +372,25 @@ func formatFieldError(fe validator.FieldError) string {
 		return ns + " is required when TLS use_acme is enabled"
 	case "required_without_redirect":
 		return ns + " is required (route has no upstream and listener does not redirect_to_https)"
-	case "required_for_wildcard":
-		return ns + " is required for wildcard certificate generation"
-	case "credentials_required_for_wildcard":
-		return "cloudflare credentials required for wildcard: provide api_token OR (auth_email and auth_key)"
-	case "unsupported_provider":
-		return fmt.Sprintf("%s has unsupported value '%v' (supported: arvancloud, cloudflare)", ns, fe.Value())
+	case "dns_provider_required":
+		return ns + " is required: at least one acme.dns_providers entry must be configured when a listener uses use_acme (DNS-01 is the only challenge solver)"
+	case "match_required":
+		return ns + " is required for acme.dns_providers entries after the first one (the first entry is the default provider)"
+	case "invalid_domain_pattern":
+		return fmt.Sprintf("%s contains an invalid glob pattern '%s'", ns, fe.Param())
+	case "dns_api_key_required":
+		return ns + " is required to solve DNS-01 challenges (set arvancloud.api_key on this acme.dns_providers entry)"
+	case "dns_credentials_required":
+		return ns + " is incomplete: provide cloudflare api_token OR (auth_email and auth_key) to solve DNS-01 challenges"
 	default:
 		return fmt.Sprintf("%s failed '%s' validation", ns, fe.Tag())
 	}
 }
 
-// GetAllACMEDomains collects all unique domains across all HTTPS listeners that use ACME.
-func (c *Config) GetAllACMEDomains() []string {
+// acmeDomains collects all unique domains across all HTTPS listeners that
+// use ACME, lowercased and trimmed. The DNS-01 challenge solvers are the only
+// ones wired up, so every returned domain requires a DNS provider.
+func (c *Config) acmeDomains() []string {
 	domainSet := make(map[string]struct{})
 	for _, l := range c.Listeners {
 		if l.Protocol == "https" && l.TLS.Enabled && l.TLS.UseACME {
@@ -352,5 +403,11 @@ func (c *Config) GetAllACMEDomains() []string {
 	for d := range domainSet {
 		domains = append(domains, d)
 	}
+	slices.Sort(domains)
 	return domains
+}
+
+// GetAllACMEDomains collects all unique domains across all HTTPS listeners that use ACME.
+func (c *Config) GetAllACMEDomains() []string {
+	return c.acmeDomains()
 }

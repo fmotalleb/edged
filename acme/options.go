@@ -14,6 +14,7 @@ import (
 
 	"github.com/fmotalleb/go-tools/log"
 	"github.com/go-acme/lego/v4/certcrypto"
+	"github.com/go-acme/lego/v4/challenge"
 	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/providers/dns/arvancloud"
@@ -377,70 +378,117 @@ func newACMETransport(ctx context.Context, cfg config.ACMEConfig) (*http.Transpo
 	return transport, nil
 }
 
+// configureDNS01Provider instantiates every acme.dns_providers entry and
+// installs a single routed provider that dispatches each DNS-01 challenge to
+// the entry selected for the challenged domain. The first entry whose match
+// globs hit the domain wins; domains that match nobody use the first entry.
 func (m *Manager) configureDNS01Provider(ctx context.Context, options managerOptions) error {
 	logger := log.FromContext(ctx)
 
 	cfg := m.cfg
-
-	providerName := strings.ToLower(strings.TrimSpace(cfg.DNSProvider.Name))
-	if providerName == "" {
+	if len(cfg.DNSProviders) == 0 {
+		// The config validator already rejects ACME-enabled setups without a
+		// DNS provider; remain a no-op for direct library usage.
 		return nil
 	}
 
-	recursiveServers := options.recursiveNameservers
-	if len(recursiveServers) == 0 {
-		recursiveServers = cfg.DNSProvider.RecursiveNameservers
+	recursiveServers := resolveRecursiveNameservers(cfg.DNSProviders, options.recursiveNameservers)
+
+	entries := make([]config.DNSProviderConfig, 0, len(cfg.DNSProviders))
+	providers := make([]challenge.Provider, 0, len(cfg.DNSProviders))
+	for i := range cfg.DNSProviders {
+		p := &cfg.DNSProviders[i]
+
+		provider, err := m.newDNS01Provider(ctx, options, p)
+		if err != nil {
+			return err
+		}
+
+		logger.Info("Configured ACME DNS-01 challenge provider",
+			zap.String("provider", p.Name),
+			zap.Strings("match", p.Match),
+			zap.Bool("default", i == 0))
+
+		entries = append(entries, *p)
+		providers = append(providers, provider)
 	}
 
-	if len(recursiveServers) == 0 {
-		recursiveServers = defaultRecursiveNS
+	if err := m.client.Challenge.SetDNS01Provider(
+		newRoutedDNSProvider(entries, providers),
+		dns01.AddRecursiveNameservers(dns01.ParseNameservers(recursiveServers)),
+	); err != nil {
+		return fmt.Errorf("failed to set DNS-01 provider: %w", err)
 	}
 
-	switch providerName {
+	return nil
+}
+
+// resolveRecursiveNameservers picks the nameservers used to verify TXT
+// propagation: an explicit option wins, then the first provider entry that
+// configures its own list, then the public defaults.
+func resolveRecursiveNameservers(providers []config.DNSProviderConfig, override []string) []string {
+	if len(override) > 0 {
+		return override
+	}
+
+	for i := range providers {
+		if len(providers[i].RecursiveNameservers) > 0 {
+			return providers[i].RecursiveNameservers
+		}
+	}
+
+	return defaultRecursiveNS
+}
+
+// newDNS01Provider builds the lego challenge provider for one config entry.
+func (m *Manager) newDNS01Provider(
+	ctx context.Context,
+	options managerOptions,
+	p *config.DNSProviderConfig,
+) (challenge.Provider, error) {
+	switch strings.ToLower(strings.TrimSpace(p.Name)) {
 	case "arvancloud":
-		return m.configureArvanCloudDNS01Provider(ctx, options, recursiveServers)
+		return m.newArvanCloudDNS01Provider(ctx, options, p)
 
 	case "cloudflare":
-		return m.configureCloudflareDNS01Provider(ctx, options, recursiveServers)
+		return m.newCloudflareDNS01Provider(ctx, options, p)
 
 	default:
-		logger.Warn("Unknown ACME DNS provider; DNS-01 provider was not configured", zap.String("provider", providerName))
-		return nil
+		return nil, fmt.Errorf("unsupported ACME DNS provider %q (supported: arvancloud, cloudflare)", p.Name)
 	}
 }
 
-func (m *Manager) configureArvanCloudDNS01Provider(
+// newArvanCloudDNS01Provider builds the ArvanCloud challenge provider for
+// one acme.dns_providers entry.
+func (m *Manager) newArvanCloudDNS01Provider(
 	ctx context.Context,
 	options managerOptions,
-	recursiveServers []string,
-) error {
+	p *config.DNSProviderConfig,
+) (challenge.Provider, error) {
 	logger := log.FromContext(ctx)
 
-	cfg := m.cfg
-
-	if cfg.DNSProvider.ArvanCloud.APIKey == "" {
-		logger.Warn("ArvanCloud DNS provider selected but API key is empty")
-		return nil
+	if p.ArvanCloud.APIKey == "" {
+		return nil, errors.New("arvancloud DNS provider requires api_key")
 	}
 
 	logger.Info("Configuring ArvanCloud DNS-01 challenge provider...")
 
 	arvConfig := arvancloud.NewDefaultConfig()
-	arvConfig.APIKey = cfg.DNSProvider.ArvanCloud.APIKey
+	arvConfig.APIKey = p.ArvanCloud.APIKey
 
-	if cfg.DNSProvider.ArvanCloud.PropagationTimeout > 0 {
-		arvConfig.PropagationTimeout = time.Duration(cfg.DNSProvider.ArvanCloud.PropagationTimeout) * time.Second
+	if p.ArvanCloud.PropagationTimeout > 0 {
+		arvConfig.PropagationTimeout = time.Duration(p.ArvanCloud.PropagationTimeout) * time.Second
 	}
 
-	if cfg.DNSProvider.ArvanCloud.PollingInterval > 0 {
-		arvConfig.PollingInterval = time.Duration(cfg.DNSProvider.ArvanCloud.PollingInterval) * time.Second
+	if p.ArvanCloud.PollingInterval > 0 {
+		arvConfig.PollingInterval = time.Duration(p.ArvanCloud.PollingInterval) * time.Second
 	}
 
-	if cfg.DNSProvider.ArvanCloud.TTL > 0 {
-		arvConfig.TTL = cfg.DNSProvider.ArvanCloud.TTL
+	if p.ArvanCloud.TTL > 0 {
+		arvConfig.TTL = p.ArvanCloud.TTL
 	}
 
-	if cfg.DNSProvider.UseSOCKS5 && m.transport != nil {
+	if p.UseSOCKS5 && m.transport != nil {
 		logger.Info("Routing ArvanCloud DNS API requests via SOCKS5 proxy")
 
 		arvConfig.HTTPClient = &http.Client{
@@ -451,61 +499,52 @@ func (m *Manager) configureArvanCloudDNS01Provider(
 
 	innerProvider, err := arvancloud.NewDNSProviderConfig(arvConfig)
 	if err != nil {
-		return fmt.Errorf("failed to initialize ArvanCloud DNS provider: %w", err)
+		return nil, fmt.Errorf("failed to initialize ArvanCloud DNS provider: %w", err)
 	}
 
 	// Wrap in a fix provider that cleans stale records before creating new ones,
 	// preventing "DNS Record Data is duplicate" 422 errors from the ArvanCloud API.
-	fixedProvider := newArvancloudFixProvider(
+	return newArvancloudFixProvider(
 		innerProvider,
-		cfg.DNSProvider.ArvanCloud.APIKey,
+		p.ArvanCloud.APIKey,
 		arvConfig.HTTPClient,
-	)
-
-	if err := m.client.Challenge.SetDNS01Provider(
-		fixedProvider,
-		dns01.AddRecursiveNameservers(dns01.ParseNameservers(recursiveServers)),
-	); err != nil {
-		return fmt.Errorf("failed to set ArvanCloud DNS-01 provider: %w", err)
-	}
-
-	return nil
+	), nil
 }
 
-func (m *Manager) configureCloudflareDNS01Provider(
+// newCloudflareDNS01Provider builds the Cloudflare challenge provider for
+// one acme.dns_providers entry.
+func (m *Manager) newCloudflareDNS01Provider(
 	ctx context.Context,
 	options managerOptions,
-	recursiveServers []string,
-) error {
+	p *config.DNSProviderConfig,
+) (challenge.Provider, error) {
 	logger := log.FromContext(ctx)
-
-	cfg := m.cfg
 
 	logger.Info("Configuring Cloudflare DNS-01 challenge provider...")
 
 	cfConfig := cloudflare.NewDefaultConfig()
 
-	if cfg.DNSProvider.Cloudflare.APIToken != "" {
-		cfConfig.AuthToken = cfg.DNSProvider.Cloudflare.APIToken
-		cfConfig.ZoneToken = cfg.DNSProvider.Cloudflare.ZoneToken
+	if p.Cloudflare.APIToken != "" {
+		cfConfig.AuthToken = p.Cloudflare.APIToken
+		cfConfig.ZoneToken = p.Cloudflare.ZoneToken
 	} else {
-		cfConfig.AuthEmail = cfg.DNSProvider.Cloudflare.AuthEmail
-		cfConfig.AuthKey = cfg.DNSProvider.Cloudflare.AuthKey
+		cfConfig.AuthEmail = p.Cloudflare.AuthEmail
+		cfConfig.AuthKey = p.Cloudflare.AuthKey
 	}
 
-	if cfg.DNSProvider.Cloudflare.PropagationTimeout > 0 {
-		cfConfig.PropagationTimeout = time.Duration(cfg.DNSProvider.Cloudflare.PropagationTimeout) * time.Second
+	if p.Cloudflare.PropagationTimeout > 0 {
+		cfConfig.PropagationTimeout = time.Duration(p.Cloudflare.PropagationTimeout) * time.Second
 	}
 
-	if cfg.DNSProvider.Cloudflare.PollingInterval > 0 {
-		cfConfig.PollingInterval = time.Duration(cfg.DNSProvider.Cloudflare.PollingInterval) * time.Second
+	if p.Cloudflare.PollingInterval > 0 {
+		cfConfig.PollingInterval = time.Duration(p.Cloudflare.PollingInterval) * time.Second
 	}
 
-	if cfg.DNSProvider.Cloudflare.TTL > 0 {
-		cfConfig.TTL = cfg.DNSProvider.Cloudflare.TTL
+	if p.Cloudflare.TTL > 0 {
+		cfConfig.TTL = p.Cloudflare.TTL
 	}
 
-	if cfg.DNSProvider.UseSOCKS5 && m.transport != nil {
+	if p.UseSOCKS5 && m.transport != nil {
 		logger.Info("Routing Cloudflare DNS API requests via SOCKS5 proxy")
 
 		cfConfig.HTTPClient = &http.Client{
@@ -516,15 +555,8 @@ func (m *Manager) configureCloudflareDNS01Provider(
 
 	provider, err := cloudflare.NewDNSProviderConfig(cfConfig)
 	if err != nil {
-		return fmt.Errorf("failed to initialize Cloudflare DNS provider: %w", err)
+		return nil, fmt.Errorf("failed to initialize Cloudflare DNS provider: %w", err)
 	}
 
-	if err := m.client.Challenge.SetDNS01Provider(
-		provider,
-		dns01.AddRecursiveNameservers(dns01.ParseNameservers(recursiveServers)),
-	); err != nil {
-		return fmt.Errorf("failed to set Cloudflare DNS-01 provider: %w", err)
-	}
-
-	return nil
+	return provider, nil
 }

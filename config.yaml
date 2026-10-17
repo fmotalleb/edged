@@ -139,41 +139,58 @@ acme:
   check_interval_hours: 24   # How often to check for expiring certificates
 
   # DNS-01 Challenge Provider Settings (Required for Wildcard certificates)
-  dns_provider:
-    # Supported providers: "arvancloud", "cloudflare"
-    name: "arvancloud"       # Switch between "arvancloud" or "cloudflare"
-    use_socks5: false         # If true, DNS API calls will also be tunneled through socks5_proxy
-    recursive_nameservers: # TXT records will be tested against these nameservers for propagation before proceeding with certificate issuance.
-      - 8.8.8.8:53
-      - 1.1.1.1:53
+  # Ordered list of providers, each serving the domains selected by its glob
+  # "match" patterns:
+  #   "example.org"   - that exact name (and its wildcard certificate)
+  #   "*.example.org" - the zone apex and every subdomain, at any depth
+  #   "*"             - any domain
+  # Entries are evaluated top to bottom and the first entry whose match hits a
+  # domain solves that domain's challenge. Domains matched by no entry fall
+  # back to the FIRST entry, so entry #1 doubles as the default provider.
+  # Match may be omitted on the first entry only; later entries require it.
+  # Supported providers: "arvancloud", "cloudflare"
+  dns_providers:
     # --------------------------------------------------------------------------
-    # 1. ArvanCloud DNS Provider Configuration
+    # 1. ArvanCloud DNS Provider (default: serves every domain not matched
+    #    by a later entry)
     # --------------------------------------------------------------------------
-    arvancloud:
-      # ArvanCloud API Key
-      # Must start with "Apikey " (e.g., "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
-      # Can also be provided via the ARVANCLOUD_API_KEY environment variable.
-      api_key: "apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-      propagation_timeout: 120 # Maximum time in seconds to wait for DNS TXT record propagation
-      polling_interval: 2      # Interval in seconds between DNS check polls
-      ttl: 600                 # TTL in seconds for created TXT records
+    - name: "arvancloud"      # Switch between "arvancloud" or "cloudflare"
+      use_socks5: false       # If true, DNS API calls will also be tunneled through socks5_proxy
+      recursive_nameservers: # TXT records will be tested against these nameservers for propagation before proceeding with certificate issuance.
+        - 8.8.8.8:53
+        - 1.1.1.1:53
+      arvancloud:
+        # ArvanCloud API Key
+        # Must start with "Apikey " (e.g., "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx")
+        # Can also be provided via the ARVANCLOUD_API_KEY environment variable.
+        api_key: "apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        propagation_timeout: 120 # Maximum time in seconds to wait for DNS TXT record propagation
+        polling_interval: 2      # Interval in seconds between DNS check polls
+        ttl: 600                 # TTL in seconds for created TXT records
 
     # --------------------------------------------------------------------------
-    # 2. Cloudflare DNS Provider Configuration
+    # 2. Cloudflare DNS Provider (only the domains matched below)
     # --------------------------------------------------------------------------
-    cloudflare:
-      # Recommended: Scoped DNS API Token with Zone:Read and DNS:Edit permissions.
-      # Can also be provided via the CLOUDFLARE_DNS_API_TOKEN environment variable.
-      api_token: "your_cloudflare_dns_api_token_here"
-      # Optional: Zone API Token if your permissions are split across two tokens.
-      # Can also be provided via the CLOUDFLARE_ZONE_API_TOKEN environment variable.
-      zone_token: ""
+    - name: "cloudflare"
+      # Glob patterns that route a domain to this provider. Required here
+      # because this entry is not the first one.
+      match:
+        - "example.com"
+        - "*.example.com"
+      use_socks5: false
+      cloudflare:
+        # Recommended: Scoped DNS API Token with Zone:Read and DNS:Edit permissions.
+        # Can also be provided via the CLOUDFLARE_DNS_API_TOKEN environment variable.
+        api_token: "your_cloudflare_dns_api_token_here"
+        # Optional: Zone API Token if your permissions are split across two tokens.
+        # Can also be provided via the CLOUDFLARE_ZONE_API_TOKEN environment variable.
+        zone_token: ""
 
-      # Legacy Authentication (Use ONLY if not using api_token above):
-      # Can also be provided via CLOUDFLARE_EMAIL and CLOUDFLARE_API_KEY env vars.
-      auth_email: ""           # e.g., "admin@example.com"
-      auth_key: ""             # e.g., "legacy_global_api_key_here"
+        # Legacy Authentication (Use ONLY if not using api_token above):
+        # Can also be provided via CLOUDFLARE_EMAIL and CLOUDFLARE_API_KEY env vars.
+        auth_email: ""           # e.g., "admin@example.com"
+        auth_key: ""             # e.g., "legacy_global_api_key_here"
 
-      propagation_timeout: 120 # Maximum time in seconds to wait for DNS propagation
-      polling_interval: 2      # Interval in seconds between DNS check polls
-      ttl: 300                 # TTL in seconds for created TXT records
+        propagation_timeout: 120 # Maximum time in seconds to wait for DNS propagation
+        polling_interval: 2      # Interval in seconds between DNS check polls
+        ttl: 300                 # TTL in seconds for created TXT records

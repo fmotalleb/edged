@@ -27,6 +27,7 @@
 4. **Multi-Provider DNS-01 Challenge Support (Wildcard Certificates)**:
    - **Cloudflare DNS**: Implements Let's Encrypt DNS-01 challenges via Cloudflare v4 API using scoped API tokens (`CLOUDFLARE_DNS_API_TOKEN`) or legacy global API keys.
    - **ArvanCloud CDN DNS**: Integrated with ArvanCloud API (`ARVANCLOUD_API_KEY`) for seamless TXT record creation and cleanup.
+   - **Per-Domain Provider Routing**: `acme.dns_providers` is an ordered list where every entry selects its domains with glob `match` patterns (`example.org`, `*.example.org`, `*`), so each domain is challenged through its own DNS provider. The first matching entry wins; unmatched domains use the first entry (the default).
    - Automatically generates wildcard certificates (`*.example.com`) without manual intervention.
 
 6. **TLS Passthrough / No TLS Termination (`no_tls_termination`)**:
@@ -137,25 +138,48 @@ acme:
   renew_before_days: 30
   check_interval_hours: 24
 
-  dns_provider:
-    name: "cloudflare"       # Switch between "cloudflare" and "arvancloud"
-    use_socks5: true
+  # Ordered per-domain DNS providers: the first entry whose glob `match`
+  # patterns hit a domain solves that domain's DNS-01 challenge;
+  # unmatched domains fall back to the
+  # first entry (the default provider).
+  dns_providers:
+    # Default provider for every domain not matched by a later entry
+    - name: "cloudflare"       # "cloudflare" or "arvancloud"
+      use_socks5: true
+      cloudflare:
+        api_token: "your_cloudflare_dns_api_token_here"
+        zone_token: ""
+        auth_email: ""
+        auth_key: ""
+        propagation_timeout: 120
+        polling_interval: 2
+        ttl: 300
 
-    arvancloud:
-      api_key: "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-      propagation_timeout: 120
-      polling_interval: 2
-      ttl: 600
-
-    cloudflare:
-      api_token: "your_cloudflare_dns_api_token_here"
-      zone_token: ""
-      auth_email: ""
-      auth_key: ""
-      propagation_timeout: 120
-      polling_interval: 2
-      ttl: 300
+    # Zone-specific override: arvancloud challenges example.org only.
+    # `match` is required on every entry after the first one.
+    - name: "arvancloud"
+      match:
+        - "example.org"
+        - "*.example.org"
+      arvancloud:
+        api_key: "Apikey xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+        propagation_timeout: 120
+        polling_interval: 2
+        ttl: 600
 ```
+
+---
+
+## 🌐 Per-Domain DNS Providers (`acme.dns_providers`)
+
+DNS-01 challenges are routed per domain, so a single certificate request can span zones hosted at different DNS providers — `example.com` is challenged through Cloudflare while `cdn.example.org` is challenged through ArvanCloud:
+
+- Each entry sets its `name` (`arvancloud` or `cloudflare`), that provider's credentials, and an optional list of glob `match` patterns.
+- Entries are evaluated in order: the **first entry whose patterns hit** the challenged domain solves that challenge.
+- Domains matched by nobody are served by the **first** entry, which is therefore the default provider (its `match` may be omitted).
+- `match` patterns use Go glob syntax: `*` matches any run of characters, `?` matches a single character, and `[abc]` matches a character class. Matching is case-insensitive.
+- Two domain-specific rules keep wildcards intuitive: a pattern of `*.example.org` also matches the zone apex `example.org`, and a wildcard certificate `*.example.org` counts as matched by a plain `example.org` pattern — its DNS-01 challenge is presented on the apex name.
+- Configuration validation fails before startup when a `use_acme` listener exists without any `acme.dns_providers` entry, when a later entry has a missing or malformed `match`, or when an entry lacks working credentials.
 
 ---
 
